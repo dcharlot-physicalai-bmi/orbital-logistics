@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Launch loop — deep stability model</title>
+<style>
+  :root{
+    --ink:#eef1f8; --ground:#0b1024; --panel:#0f1730; --line:#243157; --edge:rgba(207,170,91,.26);
+    --scope:#0b1024; --grid:#243157; --steel:#8aa0bd; --brass:#cfaa5b; --brassdim:#cfaa5b;
+    --signal:#ff6a6a; --go:#46c6b0; --near:#cfaa5b; --atmo:#6ea8ff; --earth:#1e4a63; --earthlit:#3d7fa3; --violet:#c9b3ff;
+    --sans:'Inter Tight',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono','JetBrains Mono','Roboto Mono',Menlo,Consolas,monospace;}
+  *{box-sizing:border-box;} html,body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 20px 34px;}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--brassdim);text-transform:uppercase;}
+  h1{font-size:clamp(26px,4.4vw,40px);font-weight:800;letter-spacing:-1.2px;margin:6px 0 6px;}
+  .sub{font-size:14.5px;color:#8aa0bd;max-width:820px;margin:0;line-height:1.45;}
+  .stage{display:grid;grid-template-columns:1fr 326px;gap:18px;margin-top:18px;}
+  .scope{position:relative;background:var(--scope);border:1px solid var(--edge);border-radius:4px;overflow:hidden;height:clamp(400px,56vh,560px);} .scope canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+  aside{background:var(--panel);border:1px solid var(--edge);border-radius:4px;padding:15px;display:flex;flex-direction:column;gap:12px;}
+  .sect{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--steel);text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:6px;}
+  .reads{display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:12px;} .row{display:flex;justify-content:space-between;padding:3px 0;gap:10px;} .row .k{color:#8aa0bd;} .row .v{font-weight:600;text-align:right;} .row.ok .v{color:var(--go);} .row.bad .v{color:var(--signal);} .row .v small{font-weight:400;color:#5b6a8a;font-size:10.5px;}
+  .ctrl{display:flex;flex-direction:column;gap:4px;} .ctrl label{font-family:var(--mono);font-size:11px;color:#8aa0bd;display:flex;justify-content:space-between;} .ctrl label span{color:var(--brassdim);font-weight:600;} input[type=range]{width:100%;accent-color:var(--brassdim);height:18px;}
+  label.tg{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11.5px;cursor:pointer;} label.tg input{width:15px;height:15px;accent-color:var(--go);}
+  .verdict{font-family:var(--mono);font-size:11px;line-height:1.5;border-radius:3px;padding:9px 10px;border:1px solid var(--line);background:#0f1730;min-height:44px;} .verdict b{font-weight:700;} .verdict .lo{color:var(--signal);} .verdict .hi{color:var(--go);}
+  .btns{display:flex;gap:8px;} button.b{font-family:var(--mono);font-size:11.5px;padding:8px;border:1px solid var(--edge);background:#0f1730;color:var(--ink);border-radius:3px;cursor:pointer;flex:1;} button.b:hover{background:var(--brass);color:#0b1024;}
+  .caption{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px;} .cap{border-top:1px solid var(--line);padding-top:10px;} .cap h3{font-size:13px;margin:0 0 5px;} .cap p{margin:0;font-size:12.5px;line-height:1.5;color:#8aa0bd;}
+  @media(max-width:900px){.stage{grid-template-columns:1fr;}aside{order:2;}.caption{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Launch loop · deep model · distributed instability held by control</div>
+  <h1>The structure is a control loop.</h1>
+  <p class="sub">A 2,000 km rotor at 14 km/s supports the elevated track — but the equilibrium is <em>unstable</em>, like balancing a ruler on end, all along its length. There's no material stiffness holding it up; only active stabilization. Turn it off, or push the rotor past the control margin, and watch it buckle.</p>
+  <div class="stage">
+    <div class="scope"><canvas id="c"></canvas></div>
+    <aside>
+      <div class="sect">Configuration</div>
+      <div class="ctrl"><label>rotor speed (× nominal 14 km/s) <span id="lV">1.0</span></label><input id="v" type="range" min="0.4" max="1.8" step="0.05" value="1.0"></div>
+      <div class="ctrl"><label>disturbance / vehicle load <span id="lP">30</span></label><input id="pert" type="range" min="0" max="100" step="5" value="30"></div>
+      <label class="tg"><input type="checkbox" id="stab" checked> active stabilization</label>
+      <div class="sect">State</div>
+      <div class="reads" id="reads"></div>
+      <div class="verdict" id="verdict"></div>
+      <div class="btns"><button class="b" id="bReset">Reset / re-erect</button></div>
+    </aside>
+  </div>
+  <div class="caption">
+    <div class="cap"><h3>A real instability, twice over</h3><p>Two destabilizers, both modeled: the maglev gap holding track to rotor is Earnshaw-unstable at every point, and the rotor's momentum flux acts on curvature — the fluid-conveying-pipe flutter term, v²·y″. Bending stiffness picks the buckle wavelength.</p></div>
+    <div class="cap"><h3>Control has a margin, too</h3><p>Stabilization must out-muscle both the gap instability and the flutter term. Push the rotor up and the margin shrinks; past ~1.5× nominal in this model, even active control loses and the loop buckles at its preferred wavelength. It's not unconditional.</p></div>
+    <div class="cap"><h3>Materials → control, literally</h3><p>Ordinary steel — no exotic strength anywhere. What replaces material stiffness is thousands of fast control nodes damping the whole moving mass in real time. The building is, physically, a distributed controller.</p></div>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');let W=0,H=0,DPR=1;
+const gvv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const P={v:1.0,pert:30,stab:true};
+const N=46;let y=new Array(N).fill(0),yd=new Array(N).fill(0),collapsed=0,t=0;
+const KP=20, KD=3.2, T0=45, KF=45, BB=66, KG=8; // control, damping, base tension, rotor flux, bending, magnet-gap instability
+function fluxTerm(){return KF*P.v*P.v-T0;}       // rotor momentum flux minus base tension (acts on curvature)
+function margin(){const f=Math.max(0,fluxTerm());return KP-KG-(f*f)/(4*BB);} // control vs gap + worst flutter mode
+
+function step(dt){
+  if(collapsed>0){collapsed=Math.min(1,collapsed+dt*0.5);return;}
+  const FL=fluxTerm(), stab=P.stab;
+  const lap=new Array(N).fill(0);
+  for(let i=1;i<N-1;i++)lap[i]=y[i+1]-2*y[i]+y[i-1];
+  const na=new Array(N).fill(0);
+  for(let i=1;i<N-1;i++){
+    const bih=lap[i+1]-2*lap[i]+lap[i-1];    // bending (4th deriv); lap=0 at ends = simply-supported
+    let a= KG*y[i] - FL*lap[i] - BB*bih;      // magnet-gap instability + rotor flux on curvature + bending
+    if(stab) a += -KP*y[i] - KD*yd[i];        // active stabilization
+    // random disturbance + a localized load bump traveling (vehicle)
+    a += (Math.random()*2-1)*P.pert*0.004;
+    na[i]=a;
+  }
+  for(let i=1;i<N-1;i++){ yd[i]+=na[i]*dt; y[i]+=yd[i]*dt; }
+  y[0]=y[N-1]=0; yd[0]=yd[N-1]=0;
+  // localized vehicle load pushing down at moving point
+  const vi=1+Math.floor((t*0.25%1)*(N-2));
+  if(vi>0&&vi<N-1){ yd[vi]+= -P.pert*0.0015; }
+  // collapse check
+  let amax=0;for(let i=0;i<N;i++)amax=Math.max(amax,Math.abs(y[i]));
+  if(amax>2.6){ collapsed=0.001; }
+}
+function resize(){const b=cv.getBoundingClientRect();DPR=Math.min(window.devicePixelRatio||1,2);W=b.width;H=b.height;cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);ctx.setTransform(DPR,0,0,DPR,0,0);}
+function lab(x,yy,tx,c,s,al){ctx.textAlign=al||'left';ctx.fillStyle=c;ctx.font=(s||11)+'px '+gvv('--mono');ctx.fillText(tx,x,yy);ctx.textAlign='left';}
+let last=performance.now();
+function draw(dt){t+=dt;ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle=gvv('--grid');ctx.globalAlpha=.5;ctx.lineWidth=1;const gs=44;ctx.beginPath();for(let x=(W/2)%gs;x<W;x+=gs){ctx.moveTo(x,0);ctx.lineTo(x,H);}for(let yy=0;yy<H;yy+=gs){ctx.moveTo(0,yy);ctx.lineTo(W,yy);}ctx.stroke();ctx.globalAlpha=1;
+  const surf=H*0.9;ctx.fillStyle='#14202b';ctx.fillRect(0,surf,W,H-surf);ctx.strokeStyle=gvv('--earthlit');ctx.strokeStyle='rgba(61,127,163,.8)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,surf);ctx.lineTo(W,surf);ctx.stroke();
+  const loopY=H*0.34,x0=W*0.10,x1=W*0.90,dx=(x1-x0)/(N-1);
+  // ramps
+  ctx.strokeStyle=gvv('--steel');ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(W*0.03,surf);ctx.lineTo(x0,loopY);ctx.moveTo(W*0.97,surf);ctx.lineTo(x1,loopY);ctx.stroke();
+  const yToPx=v=>v*40; const drop=collapsed>0?collapsed:0;
+  // track deflected
+  ctx.strokeStyle=collapsed>0.05?gvv('--signal'):gvv('--brass');ctx.lineWidth=2.4;ctx.beginPath();
+  for(let i=0;i<N;i++){const X=x0+i*dx;const bell=Math.sin((i/(N-1))*Math.PI);const Y=loopY+yToPx(y[i])+drop*bell*H*0.5;if(i===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);}
+  ctx.stroke();
+  // rotor dashes
+  if(collapsed<0.5){ctx.strokeStyle='rgba(231,240,246,.8)';ctx.lineWidth=1.4;const nd=52;for(let k=0;k<nd;k++){const f=((k/nd)+(t*0.9*P.v))%1;const idx=f*(N-1);const i=Math.floor(idx),fr=idx-i;const yy=(i<N-1)?(y[i]*(1-fr)+y[i+1]*fr):y[i];const X=x0+idx*dx,Y=loopY+yToPx(yy)-4;ctx.beginPath();ctx.moveTo(X,Y);ctx.lineTo(X+7,Y);ctx.stroke();}}
+  // control nodes
+  if(P.stab&&collapsed<0.3){for(let i=2;i<N-2;i+=3){const X=x0+i*dx,Y=loopY+yToPx(y[i])+9;ctx.fillStyle='rgba(47,158,95,.8)';ctx.beginPath();ctx.arc(X,Y,2.2,0,7);ctx.fill();}lab(W*0.36,loopY-Math.max(20,Math.abs(yToPx(Math.max(...y.map(Math.abs))))+18),'active stabilization · '+N*20+' nodes · ms response',gvv('--go'),10.5);}
+  // vehicle
+  if(collapsed<0.3){const vp=(t*0.25)%1.2,f=Math.min(1,vp);const idx=f*(N-1),i=Math.floor(idx),fr=idx-i,yy=(i<N-1)?(y[i]*(1-fr)+y[i+1]*fr):y[i];const X=x0+idx*dx,Y=loopY+yToPx(yy)-8;ctx.fillStyle=gvv('--brass');ctx.save();ctx.translate(X,Y);ctx.beginPath();ctx.moveTo(8,0);ctx.lineTo(-5,-4);ctx.lineTo(-5,4);ctx.closePath();ctx.fill();ctx.restore();if(vp>1.0)lab(X+8,Y-6,'\u2192 orbit',gvv('--brass'));}
+  if(collapsed>0.05)lab(W*0.34,H*0.14,'\u26a0 BUCKLING \u2014 momentum support diverging',gvv('--signal'),14);
+  lab(x0,loopY-6,'80 km','rgba(159,180,196,.6)',10);lab(14,surf-6,'ground','rgba(159,180,196,.6)',10);
+}
+function fmt(v,d){return v.toFixed(d==null?2:d);}
+function refresh(){const m=margin();const unstable=(!P.stab)||(m<0);
+  const amax=Math.max(...y.map(Math.abs));
+  document.getElementById('reads').innerHTML=
+   '<div class="row"><span class="k">rotor speed</span><span class="v">'+fmt(14*P.v,1)+' <small>km/s</small></span></div>'+
+   '<div class="row"><span class="k">altitude</span><span class="v">80 <small>km</small></span></div>'+
+   '<div class="row"><span class="k">length</span><span class="v">~2,000 <small>km</small></span></div>'+
+   '<div class="row"><span class="k">rotor momentum flux</span><span class="v">'+fmt(P.v*P.v,2)+' <small>× nominal</small></span></div>'+
+   '<div class="row '+(m<0?'bad':(P.stab?'ok':''))+'"><span class="k">stabilization margin</span><span class="v">'+(m>0?'+':'')+fmt(m,0)+' <small>'+(m<0?'exceeded':'ok')+'</small></span></div>'+
+   '<div class="row"><span class="k">power to hold up</span><span class="v">~'+Math.round(200*P.v*P.v)+' <small>MW</small></span></div>'+
+   '<div class="row"><span class="k">vehicle exit</span><span class="v">~7.8 <small>km/s · 3g</small></span></div>'+
+   '<div class="row '+(collapsed>0?'bad':'ok')+'"><span class="k">track deflection</span><span class="v">'+(collapsed>0?'DIVERGING':fmt(amax*10,1)+' <small>rel</small>')+'</span></div>'+
+   '<div class="row"><span class="k">material</span><span class="v">ordinary steel \u2713</span></div>';
+  let v;
+  if(collapsed>0) v='<b class="lo">collapse:</b> deflection ran away. '+((!P.stab)?'With stabilization off there is nothing to hold the equilibrium.':'The rotor\u2019s destabilizing stiffness exceeded the control authority.')+' Re-erect to try again.';
+  else if(!P.stab) v='<b class="lo">stabilization off:</b> the equilibrium is unstable \u2014 deflection is growing and will diverge. This is the whole point: no material holds it, only control.';
+  else if(m<0) v='<b class="lo">margin exceeded:</b> at '+fmt(14*P.v,1)+' km/s the rotor out-pushes the controller. Even active stabilization can\u2019t hold it \u2014 slow the rotor.';
+  else v='<b class="hi">stable:</b> held aloft at '+fmt(14*P.v,1)+' km/s purely by the controller damping every span. Ordinary steel, no exotic strength \u2014 the structure is a distributed control loop.';
+  document.getElementById('verdict').innerHTML=v;
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;const sub=10;for(let s=0;s<sub;s++)step(dt*3/sub);draw(dt);refresh();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+function br(id,k,l,f){$(id).addEventListener('input',e=>{P[k]=+e.target.value;$(l).textContent=f?f(P[k]):P[k];});}
+br('v','v','lV',v=>v.toFixed(2));br('pert','pert','lP');
+$('stab').addEventListener('change',e=>P.stab=e.target.checked);
+$('bReset').onclick=()=>{y=new Array(N).fill(0);yd=new Array(N).fill(0);collapsed=0;P.stab=true;$('stab').checked=true;};
+window.addEventListener('resize',resize);resize();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maglev sled — deep model</title>
+<style>
+  :root{
+    --ink:#eef1f8; --ground:#0b1024; --panel:#0f1730; --line:#243157; --edge:rgba(207,170,91,.26);
+    --scope:#0b1024; --grid:#243157; --steel:#8aa0bd; --brass:#cfaa5b; --brassdim:#cfaa5b;
+    --signal:#ff6a6a; --go:#46c6b0; --near:#cfaa5b; --atmo:#6ea8ff; --earth:#1e4a63; --earthlit:#3d7fa3; --violet:#c9b3ff;
+    --sans:'Inter Tight',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono','JetBrains Mono','Roboto Mono',Menlo,Consolas,monospace;}
+  *{box-sizing:border-box;} html,body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 20px 34px;}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--brassdim);text-transform:uppercase;}
+  h1{font-size:clamp(26px,4.4vw,40px);font-weight:800;letter-spacing:-1.2px;margin:6px 0 6px;}
+  .sub{font-size:14.5px;color:#8aa0bd;max-width:820px;margin:0;line-height:1.45;}
+  .stage{display:grid;grid-template-columns:1fr 328px;gap:18px;margin-top:18px;}
+  .scope{position:relative;background:var(--scope);border:1px solid var(--edge);border-radius:4px;overflow:hidden;height:clamp(400px,56vh,560px);}
+  .scope canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+  aside{background:var(--panel);border:1px solid var(--edge);border-radius:4px;padding:15px;display:flex;flex-direction:column;gap:12px;}
+  .sect{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--steel);text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:6px;}
+  .reads{display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:12px;}
+  .row{display:flex;justify-content:space-between;padding:3px 0;gap:10px;} .row .k{color:#8aa0bd;} .row .v{font-weight:600;text-align:right;} .row.key .v{color:var(--brassdim);} .row.bad .v{color:var(--signal);} .row.ok .v{color:var(--go);} .row .v small{font-weight:400;color:#5b6a8a;font-size:10.5px;}
+  .ctrl{display:flex;flex-direction:column;gap:4px;} .ctrl label{font-family:var(--mono);font-size:11px;color:#8aa0bd;display:flex;justify-content:space-between;} .ctrl label span{color:var(--brassdim);font-weight:600;} input[type=range]{width:100%;accent-color:var(--brassdim);height:18px;}
+  .verdict{font-family:var(--mono);font-size:11px;line-height:1.5;border-radius:3px;padding:9px 10px;border:1px solid var(--line);background:#0f1730;} .verdict b{font-weight:700;} .verdict .lo{color:var(--signal);} .verdict .hi{color:var(--go);}
+  .caption{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px;} .cap{border-top:1px solid var(--line);padding-top:10px;} .cap h3{font-size:13px;margin:0 0 5px;} .cap p{margin:0;font-size:12.5px;line-height:1.5;color:#8aa0bd;}
+  @media(max-width:900px){.stage{grid-template-columns:1fr;}aside{order:2;}.caption{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Maglev sled · deep model · exit-speed vs g-load vs track length</div>
+  <h1>What the ground assist really costs.</h1>
+  <p class="sub">A linear motor gives a rocket a running start. The physics is unforgiving in one direction: track length grows with the <em>square</em> of exit speed, and it's capped by how many g the payload survives. Dial the exit speed and the g-limit and watch the track stretch to tens of kilometers — and the switching electronics into the kilohertz.</p>
+  <div class="stage">
+    <div class="scope"><canvas id="c"></canvas></div>
+    <aside>
+      <div class="sect">Configuration</div>
+      <div class="ctrl"><label>exit speed (km/s) <span id="lV">1.0</span></label><input id="vex" type="range" min="0.3" max="4.0" step="0.1" value="1.0"></div>
+      <div class="ctrl"><label>g-load limit <span id="lG">10</span></label><input id="glim" type="range" min="2" max="30" step="1" value="10"></div>
+      <div class="ctrl"><label>vehicle mass (t) <span id="lM">50</span></label><input id="mass" type="range" min="5" max="500" step="5" value="50"></div>
+      <div class="ctrl"><label>coil pitch (m) <span id="lP">0.5</span></label><input id="pitch" type="range" min="0.2" max="1.0" step="0.05" value="0.5"></div>
+      <div class="sect">Solution</div>
+      <div class="reads" id="reads"></div>
+      <div class="verdict" id="verdict"></div>
+    </aside>
+  </div>
+  <div class="caption">
+    <div class="cap"><h3>Track length is quadratic</h3><p>To reach speed V at acceleration a you need L = V²/2a. Double the exit speed and the track quadruples. That's why kinetic assist stays modest: a few hundred m/s is cheap, multi-km/s means tens of kilometers of guideway.</p></div>
+    <div class="cap"><h3>g-load is the ceiling</h3><p>People tolerate ~3 g, hardened cargo ~10–20 g. Lower g means gentler acceleration means a longer track for the same exit speed. Passengers and high exit speed are nearly incompatible — this is a cargo game.</p></div>
+    <div class="cap"><h3>Where physical AI is the gate</h3><p>The traveling magnetic wave must commute coils in step with the vehicle as it accelerates — switching frequency climbs into the kilohertz at exit — while holding a millimeter levitation gap. Fast power electronics and control, not a person.</p></div>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');let W=0,H=0,DPR=1,t=0;
+const gvv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const P={vex:1.0,glim:10,mass:50,pitch:0.5};
+const VE=3.4335,EPS=0.06;
+function sol(){const V=P.vex*1000,a=P.glim*9.81,L=V*V/(2*a),tAcc=V/a,fSw=V/P.pitch,m=P.mass*1000,Ppk=m*a*V,E=0.5*m*V*V,mach=V/295;
+  const dvR=Math.max(0.1,9.4-P.vex),MR=Math.exp(dvR/VE),lam=Math.max(0,1/MR-EPS),MR0=Math.exp(9.4/VE),lam0=Math.max(1e-4,1/MR0-EPS),mult=lam/lam0;
+  return{V,a,L,tAcc,fSw,Ppk,E,mach,MR,mult,dvR};}
+function resize(){const b=cv.getBoundingClientRect();DPR=Math.min(window.devicePixelRatio||1,2);W=b.width;H=b.height;cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);ctx.setTransform(DPR,0,0,DPR,0,0);}
+function lab(x,y,tx,c,s,al){ctx.textAlign=al||'left';ctx.fillStyle=c;ctx.font=(s||11)+'px '+gvv('--mono');ctx.fillText(tx,x,y);ctx.textAlign='left';}
+let last=performance.now();
+function draw(dt){t+=dt;const S=sol();ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle=gvv('--grid');ctx.globalAlpha=.5;ctx.lineWidth=1;const gs=44;ctx.beginPath();for(let x=(W/2)%gs;x<W;x+=gs){ctx.moveTo(x,0);ctx.lineTo(x,H);}for(let y=0;y<H;y+=gs){ctx.moveTo(0,y);ctx.lineTo(W,y);}ctx.stroke();ctx.globalAlpha=1;
+  const baseY=H*0.82,topY=H*0.30,x0=W*0.09,x1=W*0.78;ctx.fillStyle='#14202b';ctx.fillRect(0,baseY+8,W,H-baseY);
+  ctx.strokeStyle=gvv('--steel');ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x0,baseY);ctx.lineTo(x1,topY);ctx.stroke();
+  const N=26,prog=(t*0.4)%1.2,vp=Math.min(1,prog);
+  for(let i=0;i<N;i++){const f=i/(N-1),X=x0+(x1-x0)*f,Y=baseY+(topY-baseY)*f,act=Math.abs(f-vp)<0.05;ctx.strokeStyle=act?gvv('--go'):'rgba(95,119,137,.5)';ctx.lineWidth=act?3:1.6;ctx.beginPath();ctx.moveTo(X-7,Y+7);ctx.lineTo(X+7,Y-7);ctx.stroke();}
+  const vx=x0+(x1-x0)*vp,vy=baseY+(topY-baseY)*vp,ang=Math.atan2(topY-baseY,x1-x0);
+  ctx.save();ctx.translate(vx,vy);ctx.rotate(ang);ctx.fillStyle='#e7f0f6';ctx.strokeStyle=gvv('--ink');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(15,0);ctx.lineTo(-9,-5);ctx.lineTo(-9,5);ctx.closePath();ctx.fill();ctx.stroke();
+  if(prog>1.0){ctx.fillStyle='rgba(192,138,46,.8)';ctx.beginPath();ctx.moveTo(-9,-3);ctx.lineTo(-9,3);ctx.lineTo(-9-70*(prog-1),0);ctx.closePath();ctx.fill();}ctx.restore();
+  lab(x0-4,baseY+22,'sea level','rgba(159,180,196,.7)',10);lab(x1-40,topY-10,'exit '+S.mach.toFixed(0)+' Mach','rgba(159,180,196,.7)',10);
+  // real length callout on the track
+  lab((x0+x1)/2-40,(baseY+topY)/2-10,'real length: '+(S.L/1000).toFixed(1)+' km',(S.L>60000?gvv('--signal'):gvv('--brass')),12);
+  // switching freq indicator (rises with vp)
+  const fnow=(S.fSw*vp);lab(vx+12,vy-14,'coil switching '+(fnow/1000).toFixed(1)+' kHz',gvv('--go'),10.5);
+  // g-load bar
+  const gx=W*0.06,gy=H*0.12,gw=14,gh=H*0.5;ctx.strokeStyle='rgba(159,180,196,.4)';ctx.strokeRect(gx,gy,gw,gh);const gf=Math.min(1,P.glim/30);ctx.fillStyle=P.glim>15?gvv('--signal'):gvv('--brass');ctx.fillRect(gx,gy+gh*(1-gf),gw,gh*gf);lab(gx-2,gy-6,P.glim+' g','#9fb4c4',10);
+  // human tolerance line at 3g
+  const yh=gy+gh*(1-3/30);ctx.strokeStyle='rgba(47,158,95,.7)';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(gx-4,yh);ctx.lineTo(gx+gw+30,yh);ctx.stroke();ctx.setLineDash([]);lab(gx+gw+6,yh+3,'human 3g',gvv('--go'),9);
+}
+function fmt(v,d){return v.toFixed(d==null?2:d);}
+function refresh(){const S=sol();const feas=S.L<60000?'ok':(S.L<150000?'':'bad');
+  document.getElementById('reads').innerHTML=
+   '<div class="row key"><span class="k">track length needed</span><span class="v">'+(S.L/1000).toFixed(1)+' <small>km</small></span></div>'+
+   '<div class="row"><span class="k">acceleration</span><span class="v">'+P.glim+' <small>g = '+Math.round(S.a)+' m/s²</small></span></div>'+
+   '<div class="row"><span class="k">time on track</span><span class="v">'+fmt(S.tAcc,1)+' <small>s</small></span></div>'+
+   '<div class="row"><span class="k">exit Mach</span><span class="v">M'+S.mach.toFixed(0)+'</span></div>'+
+   '<div class="row"><span class="k">coil switching @ exit</span><span class="v">'+(S.fSw/1000).toFixed(1)+' <small>kHz</small></span></div>'+
+   '<div class="row"><span class="k">peak power</span><span class="v">'+(S.Ppk/1e9).toFixed(1)+' <small>GW</small></span></div>'+
+   '<div class="row"><span class="k">launch energy</span><span class="v">'+(S.E/1e9).toFixed(0)+' <small>GJ</small></span></div>'+
+   '<div class="row"><span class="k">rocket Δv remaining</span><span class="v">'+fmt(S.dvR,1)+' <small>km/s</small></span></div>'+
+   '<div class="row ok"><span class="k">payload multiplier</span><span class="v">'+(S.mult>99?'>99':S.mult.toFixed(1))+'\u00d7 <small>vs no assist \u00b7 SSTO model</small></span></div>';
+  let v;
+  if(S.L>150000) v='<b class="lo">impractical:</b> '+(S.L/1000).toFixed(0)+' km of guideway at '+P.glim+' g. Exit speed grows track as V² \u2014 back off the speed or accept a shorter, higher-g cargo shot.';
+  else if(P.glim<=3&&P.vex>0.5) v='<b class="lo">passenger regime:</b> at 3 g, '+P.vex.toFixed(1)+' km/s needs '+(S.L/1000).toFixed(0)+' km. Crewed high-speed launch is nearly untenable \u2014 this is why it\u2019s cargo.';
+  else if(S.L<60000) v='<b class="hi">buildable:</b> '+(S.L/1000).toFixed(1)+' km track, '+P.glim+' g, '+(S.Ppk/1e9).toFixed(1)+' GW peak \u2192 payload \u00d7'+(S.mult>99?'99+':S.mult.toFixed(1))+'. A real assist \u2014 and the coils commute at '+(S.fSw/1000).toFixed(1)+' kHz, a control problem, not a materials one.';
+  else v='<b>large but feasible:</b> '+(S.L/1000).toFixed(0)+' km track for '+P.vex.toFixed(1)+' km/s at '+P.glim+' g. Payload \u00d7'+S.mult.toFixed(1)+'. Trade exit speed against length.';
+  document.getElementById('verdict').innerHTML=v;
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;draw(dt);refresh();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+function br(id,k,l,f){$(id).addEventListener('input',e=>{P[k]=+e.target.value;$(l).textContent=f?f(P[k]):P[k];});}
+br('vex','vex','lV',v=>v.toFixed(1));br('glim','glim','lG');br('mass','mass','lM');br('pitch','pitch','lP',v=>v.toFixed(2));
+window.addEventListener('resize',resize);resize();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

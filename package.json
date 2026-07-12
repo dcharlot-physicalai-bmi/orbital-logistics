@@ -1,0 +1,13 @@
+{
+  "name": "orbital-logistics",
+  "version": "0.1.0",
+  "description": "Physical AI for space logistics and transportation: an instrument suite and headless physics core. Institute for Physical AI @ BMI.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test core/physics.test.mjs",
+    "sweep": "node core/sweep.mjs"
+  },
+  "author": "Institute for Physical AI @ BMI",
+  "repository": "github:dcharlot-physicalai-bmi/orbital-logistics"
+}

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skyhook — deep model (real orbital mechanics)</title>
+<style>
+  :root{
+    --ink:#eef1f8; --ground:#0b1024; --panel:#0f1730; --line:#243157; --edge:rgba(207,170,91,.26);
+    --scope:#0b1024; --grid:#243157; --steel:#8aa0bd; --brass:#cfaa5b; --brassdim:#cfaa5b;
+    --signal:#ff6a6a; --go:#46c6b0; --near:#cfaa5b; --atmo:#6ea8ff; --earth:#1e4a63; --earthlit:#3d7fa3; --violet:#c9b3ff;
+    --sans:'Inter Tight',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono','JetBrains Mono','Roboto Mono',Menlo,Consolas,monospace;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 20px 34px;}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--brassdim);text-transform:uppercase;}
+  h1{font-size:clamp(26px,4.4vw,40px);font-weight:800;letter-spacing:-1.2px;margin:6px 0 6px;line-height:1.03;}
+  .sub{font-size:14.5px;color:#8aa0bd;max-width:820px;margin:0;line-height:1.45;}
+  .stage{display:grid;grid-template-columns:1fr 330px;gap:18px;margin-top:18px;}
+  .scope{position:relative;background:var(--scope);border:1px solid var(--edge);border-radius:4px;overflow:hidden;height:clamp(420px,60vh,600px);}
+  .scope canvas{position:absolute;inset:0;width:100%;height:100%;display:block;}
+  .mode-tag{position:absolute;top:11px;left:14px;font-family:var(--mono);font-size:10px;letter-spacing:2px;color:#8aa0bd;}
+  aside{background:var(--panel);border:1px solid var(--edge);border-radius:4px;padding:15px 15px 17px;display:flex;flex-direction:column;gap:12px;overflow:auto;}
+  .sect{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--steel);text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:6px;}
+  .reads{display:flex;flex-direction:column;gap:1px;font-family:var(--mono);font-size:12px;}
+  .row{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;gap:10px;}
+  .row .k{color:#8aa0bd;} .row .v{font-weight:600;text-align:right;letter-spacing:-.2px;}
+  .row.ok .v{color:var(--go);} .row.bad .v{color:var(--signal);} .row.key .v{color:var(--brassdim);} .row.rel .v{color:var(--violet);}
+  .row .v small{font-weight:400;color:#5b6a8a;font-size:10.5px;}
+  .ctrl{display:flex;flex-direction:column;gap:4px;}
+  .ctrl label{font-family:var(--mono);font-size:11px;color:#8aa0bd;display:flex;justify-content:space-between;}
+  .ctrl label span{color:var(--brassdim);font-weight:600;}
+  input[type=range]{width:100%;accent-color:var(--brassdim);height:18px;}
+  select{font-family:var(--mono);font-size:11.5px;padding:6px;border:1px solid var(--edge);border-radius:3px;background:#0f1730;color:var(--ink);}
+  .matrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;padding:2px 0;}
+  .matrow.sel{color:var(--brassdim);font-weight:700;} .matrow .m{color:#8aa0bd;} .matrow.sel .m{color:var(--brassdim);}
+  .verdict{font-family:var(--mono);font-size:11px;line-height:1.5;border-radius:3px;padding:9px 10px;border:1px solid var(--line);background:#0f1730;}
+  .verdict b{font-weight:700;} .verdict .lo{color:var(--signal);} .verdict .hi{color:var(--go);}
+  .btns{display:flex;gap:8px;} button.b{font-family:var(--mono);font-size:11.5px;padding:8px 10px;border:1px solid var(--edge);background:#0f1730;color:var(--ink);border-radius:3px;cursor:pointer;flex:1;} button.b:hover{background:var(--brass);color:#0b1024;} button.b.pri{background:var(--brassdim);color:#fff;border-color:var(--brassdim);} button.b.pri:hover{background:#6f5010;}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--signal);outline-offset:2px;}
+  .caption{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px;}
+  .cap{border-top:1px solid var(--line);padding-top:10px;} .cap h3{font-size:13px;margin:0 0 5px;font-weight:700;} .cap p{margin:0;font-size:12.5px;line-height:1.5;color:#8aa0bd;}
+  @media(max-width:900px){ .stage{grid-template-columns:1fr;} aside{order:2;} .caption{grid-template-columns:1fr;gap:10px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Skyhook · deep model · real orbital mechanics + tapered-tether physics</div>
+  <h1>The real numbers.</h1>
+  <p class="sub">Same rotovator, now rigorous: velocities from vis-viva, the tip's true path from actual orbital and spin rates, the payload's real transfer orbit after release, and the tether's mass from the constant-stress taper equation — so the materials question stops being a hand-wave. Pick a material and watch the whole thing become buildable or impossible.</p>
+
+  <div class="stage">
+    <div class="scope"><canvas id="c"></canvas><div class="mode-tag" id="modeTag">EARTH-CENTERED INERTIAL · ANIMATION TIME ×400</div></div>
+    <aside>
+      <div class="sect">Configuration</div>
+      <div class="ctrl"><label>station altitude (km) <span id="lAlt">600</span></label><input id="alt" type="range" min="300" max="2000" step="10" value="600"></div>
+      <div class="ctrl"><label>tether length / arm (km) <span id="lLen">400</span></label><input id="len" type="range" min="50" max="1500" step="10" value="400"></div>
+      <div class="ctrl"><label>tip speed vs station (km/s) <span id="lTip">3.0</span></label><input id="tip" type="range" min="0.5" max="7.5" step="0.1" value="3.0"></div>
+      <div class="ctrl"><label>tether material</label>
+        <select id="mat"><option value="0">Kevlar-49</option><option value="1">Spectra / Dyneema</option><option value="2">Zylon (PBO)</option><option value="3">Carbon nanotube (theoretical)</option></select>
+      </div>
+
+      <div class="sect">Orbital solution</div>
+      <div class="reads" id="reads"></div>
+      <div class="verdict" id="verdict"></div>
+
+      <div class="sect">Tether mass ÷ payload, by material</div>
+      <div id="mats"></div>
+
+      <div class="btns"><button class="b pri" id="bFling">Fling a payload</button><button class="b" id="bReset">Reset</button></div>
+    </aside>
+  </div>
+
+  <div class="caption">
+    <div class="cap"><h3>Vis-viva, not hand-waving</h3><p>Every velocity is v=√(GM(2/r−1/a)). The catch speed is the station's orbital speed minus the tip speed at the low point (tip speed measured relative to the station); release adds them at the high point. The violet curve is the payload's actual orbit after release, drawn from its release state.</p></div>
+    <div class="cap"><h3>The tether equation is the wall</h3><p>A stress-tapered tether needs mass Mₜ/Mₚ = √π·x·e^{x²}·erf(x), where x = tip-speed ÷ the material's characteristic velocity. Because of the e^{x²}, everything hinges on the material: Kevlar caps you at partial tip speeds; nanotube makes a full-speed hook trivial.</p></div>
+    <div class="cap"><h3>Same tradeoff, quantified</h3><p>Raise the tip speed and the catch gets easier (lower relative velocity) while the tether mass explodes. Switch materials and the whole curve shifts. This is the structure↔handshake tradeoff from the console, now in real kilograms and kilometers per second.</p></div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+let W=0,H=0,DPR=1;
+const GM=3.986004418e14, RE=6.371e6, WE=7.292115e-5; // m3/s2, m, rad/s (earth spin)
+function gv(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+function erf(x){const s=x<0?-1:1;x=Math.abs(x);const t=1/(1+0.3275911*x);const y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);return s*y;}
+
+const MATS=[
+  {n:'Kevlar-49', sig:3.6e9, rho:1440},
+  {n:'Spectra/Dyneema', sig:3.4e9, rho:970},
+  {n:'Zylon (PBO)', sig:5.8e9, rho:1560},
+  {n:'Carbon nanotube', sig:50e9, rho:1340},
+];
+MATS.forEach(m=>m.vc=Math.sqrt(2*m.sig/m.rho));
+
+const P={alt:600, len:400, tip:3.0, mat:0};
+function massRatio(vtip_ms, vc){const x=vtip_ms/vc; if(x<=0)return 0; return Math.sqrt(Math.PI)*x*Math.exp(x*x)*erf(x);}
+
+function solve(){
+  const rc=RE+P.alt*1000;                    // station radius
+  const Vc=Math.sqrt(GM/rc);                  // circular orbital velocity (vis-viva, circular)
+  const Om=Vc/rc;                             // orbital angular rate
+  const L=P.len*1000;
+  const Vt=P.tip*1000;
+  const omI=Vt/L;                             // inertial spin rate (tip speed is station-relative)
+  const omRel=Math.max(1e-9,omI-Om);          // spin rate relative to local vertical
+  const rBot=rc-L, rTop=rc+L;
+  const altBot=(rBot-RE)/1000, altTop=(rTop-RE)/1000;
+  const Vbot=Vc-Vt;                           // inertial tangential speed at bottom (catch)
+  const Vtop=Vc+Vt;                           // inertial tangential speed at top (release)
+  const aTip=omI*omI*L;                       // tip centripetal accel (inertial)
+  const spinT=2*Math.PI/omRel;                // bottom-pass period (catch cadence)
+  const cusps=omRel/Om;                       // bottom passes per orbit
+  const vGround=WE*rBot;                      // ground/atmosphere co-rotation speed at catch alt (equatorial)
+  // release orbit (perigee at rTop, speed Vtop tangential)
+  const invA=2/rTop - Vtop*Vtop/GM;
+  let relKind, apoAlt=null, ecc=null, aRel=null, c3=null;
+  if(invA>1e-12){ aRel=1/invA; ecc=1-rTop/aRel; const rApo=aRel*(1+ecc); apoAlt=(rApo-RE)/1000; relKind=(altBot<80)?'x':'ellipse'; }
+  else { relKind='escape'; c3=Vtop*Vtop-2*GM/rTop; }
+  const mat=MATS[P.mat];
+  const mr=massRatio(Vt, mat.vc);
+  return {rc,Vc,Om,L,Vt,omI,omRel,rBot,rTop,altBot,altTop,Vbot,Vtop,aTip,spinT,cusps,vGround,relKind,apoAlt,ecc,aRel,c3,mr,mat};
+}
+
+// ---- animation state ----
+let t=0, trail=[], fling=null; // fling: {phase, thetaRel(anomaly), releaseAngle, sol}
+function resize(){const b=cv.getBoundingClientRect();DPR=Math.min(window.devicePixelRatio||1,2);W=b.width;H=b.height;cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);ctx.setTransform(DPR,0,0,DPR,0,0);}
+function lab(x,y,tx,c,s,al){ctx.textAlign=al||'left';ctx.fillStyle=c;ctx.font=(s||11)+'px '+gv('--mono');ctx.fillText(tx,x,y);ctx.textAlign='left';}
+
+let last=performance.now();
+function draw(dt){
+  t+=dt;
+  const S=solve();
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.strokeStyle=gv('--grid');ctx.globalAlpha=.5;ctx.lineWidth=1;const gs=44;ctx.beginPath();for(let x=(W/2)%gs;x<W;x+=gs){ctx.moveTo(x,0);ctx.lineTo(x,H);}for(let y=0;y<H;y+=gs){ctx.moveTo(0,y);ctx.lineTo(W,y);}ctx.stroke();ctx.globalAlpha=1;
+
+  // view scale: fit release apogee (if elliptical & sane) else a few orbit radii
+  let maxR=S.rTop*1.25;
+  if(S.relKind==='ellipse' && S.apoAlt!=null){ maxR=Math.max(maxR, Math.min((S.apoAlt*1000+RE)*1.15, S.rc*9)); }
+  else if(S.relKind==='escape'){ maxR=Math.max(maxR, S.rc*4.2); }
+  const cx=W*0.42, cy=H*0.52, sc=Math.min(W,H)*0.44/maxR;
+
+  // Earth
+  ctx.fillStyle=gv('--earth');ctx.beginPath();ctx.arc(cx,cy,RE*sc,0,7);ctx.fill();
+  ctx.strokeStyle=gv('--earthlit');ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(cx,cy,RE*sc,0,7);ctx.stroke();
+  // atmosphere
+  ctx.strokeStyle='rgba(57,166,207,.35)';ctx.setLineDash([2,4]);ctx.beginPath();ctx.arc(cx,cy,(RE+100e3)*sc,0,7);ctx.stroke();ctx.setLineDash([]);
+  // station orbit
+  ctx.strokeStyle='rgba(159,180,196,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.arc(cx,cy,S.rc*sc,0,7);ctx.stroke();
+  // catch & release radii
+  ctx.strokeStyle='rgba(57,166,207,.25)';ctx.setLineDash([1,5]);ctx.beginPath();ctx.arc(cx,cy,S.rBot*sc,0,7);ctx.stroke();ctx.beginPath();ctx.arc(cx,cy,S.rTop*sc,0,7);ctx.stroke();ctx.setLineDash([]);
+
+  // station + tether (real rates)
+  const alpha=S.Om*t*400;                 // sped up for visibility
+  const psi=-S.omRel*t*400;                // spin rel. to local vertical, retrograde tip at bottom (rates ×400)
+  const sr=(cos,sin)=>[cx+cos*sc, cy+sin*sc];
+  const stx=S.rc*Math.cos(alpha), sty=S.rc*Math.sin(alpha);
+  const rhat=[Math.cos(alpha),Math.sin(alpha)], that=[-Math.sin(alpha),Math.cos(alpha)];
+  const tipR=[stx+S.L*(Math.cos(psi)*rhat[0]+Math.sin(psi)*that[0]), sty+S.L*(Math.cos(psi)*rhat[1]+Math.sin(psi)*that[1])];
+  const cwR=[stx-0.3*S.L*(Math.cos(psi)*rhat[0]+Math.sin(psi)*that[0]), sty-0.3*S.L*(Math.cos(psi)*rhat[1]+Math.sin(psi)*that[1])];
+  // tip trail (epitrochoid)
+  trail.push([tipR[0],tipR[1]]); if(trail.length>420)trail.shift();
+  for(let i=1;i<trail.length;i++){const a=i/trail.length;const p0=sr(trail[i-1][0],trail[i-1][1]),p1=sr(trail[i][0],trail[i][1]);ctx.strokeStyle='rgba(192,138,46,'+(a*.55)+')';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(p0[0],p0[1]);ctx.lineTo(p1[0],p1[1]);ctx.stroke();}
+  const stP=sr(stx,sty), tipP=sr(tipR[0],tipR[1]), cwP=sr(cwR[0],cwR[1]);
+  ctx.strokeStyle='rgba(150,170,185,.5)';ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(stP[0],stP[1]);ctx.lineTo(cwP[0],cwP[1]);ctx.stroke();
+  ctx.strokeStyle=gv('--brass');ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(stP[0],stP[1]);ctx.lineTo(tipP[0],tipP[1]);ctx.stroke();
+  ctx.fillStyle='#c7d4dd';ctx.beginPath();ctx.arc(cwP[0],cwP[1],3.5,0,7);ctx.fill();
+  ctx.fillStyle='#e7f0f6';ctx.strokeStyle=gv('--ink');ctx.lineWidth=1;ctx.beginPath();ctx.arc(stP[0],stP[1],5,0,7);ctx.fill();ctx.stroke();
+  ctx.fillStyle=gv('--brass');ctx.beginPath();ctx.arc(tipP[0],tipP[1],4,0,7);ctx.fill();
+
+  // release transfer orbit (violet) — draw the payload's actual post-release orbit at current release geometry
+  if(S.relKind==='ellipse' && S.aRel>0){
+    // perigee direction = outward radial at "top" release point; use current alpha as illustrative release longitude
+    const beta=alpha; const a=S.aRel*sc, e=S.ecc, b=a*Math.sqrt(1-e*e);
+    // ellipse with focus at Earth center: parametric by true anomaly
+    ctx.strokeStyle='rgba(123,108,192,.7)';ctx.lineWidth=1.4;ctx.setLineDash([4,4]);ctx.beginPath();
+    for(let th=0;th<=6.2832;th+=0.05){const r=(S.aRel*(1-e*e))/(1+e*Math.cos(th))*sc;const ang=beta+th;const X=cx+r*Math.cos(ang),Y=cy+r*Math.sin(ang);if(th===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);}
+    ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+    lab(cx+8,cy-Math.min(H*0.4,(S.rTop*sc)+40),'release orbit (violet)','rgba(123,108,192,.8)',10);
+  }
+
+  // fling payload animation
+  if(fling){
+    fling.th+=dt*1.1;
+    const e=S.ecc||0, aR=S.aRel||S.rTop, beta=fling.beta;
+    let r,ang;
+    if(S.relKind==='ellipse'){ const th=Math.min(fling.th,Math.PI); r=(aR*(1-e*e))/(1+e*Math.cos(th)); ang=beta+th; }
+    else { r=S.rTop*(1+fling.th*0.5); ang=beta+fling.th*0.5; }
+    const X=cx+r*sc*Math.cos(ang), Y=cy+r*sc*Math.sin(ang);
+    ctx.fillStyle=gv('--violet');ctx.strokeStyle='#eae6ff';ctx.lineWidth=1;ctx.save();ctx.translate(X,Y);ctx.beginPath();ctx.arc(0,0,4,0,7);ctx.fill();ctx.stroke();ctx.restore();
+    if(fling.th>Math.PI*1.05 || r>maxR){ fling=null; }
+    else lab(X+8,Y,S.relKind==='escape'?'\u2192 escape':'\u2192 apogee',gv('--violet'),10);
+  }
+
+  lab(cx-RE*sc*0.4, cy, 'EARTH','rgba(210,225,235,.4)',10);
+}
+
+function fmt(v,d){return v.toFixed(d==null?2:d);}
+function refresh(){
+  const S=solve();
+  const machBot=(S.Vbot)/295; // approx a_sound upper atmo ~295 m/s
+  const rd=document.getElementById('reads');
+  let apoStr = S.relKind==='escape' ? ('ESCAPE · C3 '+fmt(S.c3/1e6,1)+' km\u00b2/s\u00b2')
+             : S.relKind==='x' ? 'tip below atmosphere' : (S.apoAlt>=35600&&S.apoAlt<=36200?'\u2248 GEO ('+Math.round(S.apoAlt).toLocaleString()+' km)':Math.round(S.apoAlt).toLocaleString()+' km');
+  rd.innerHTML=
+    '<div class="row"><span class="k">orbital velocity</span><span class="v">'+fmt(S.Vc/1000)+' <small>km/s</small></span></div>'+
+    '<div class="row"><span class="k">tip speed</span><span class="v">'+fmt(S.Vt/1000)+' <small>km/s</small></span></div>'+
+    '<div class="row key"><span class="k">catch velocity <small>(inertial)</small></span><span class="v">'+(S.Vbot<=0?'<0!':fmt(S.Vbot/1000))+' <small>km/s · M'+(machBot>0?machBot.toFixed(0):'-')+'</small></span></div>'+
+    '<div class="row"><span class="k">catch altitude</span><span class="v '+(S.altBot<80?'bad':'')+'">'+Math.round(S.altBot)+' <small>km</small></span></div>'+
+    '<div class="row"><span class="k">Earth-spin assist</span><span class="v">'+fmt(S.vGround/1000)+' <small>km/s free</small></span></div>'+
+    '<div class="row rel"><span class="k">release velocity</span><span class="v">'+fmt(S.Vtop/1000)+' <small>km/s</small></span></div>'+
+    '<div class="row rel"><span class="k">release orbit apogee</span><span class="v">'+apoStr+'</span></div>'+
+    '<div class="row"><span class="k">spin period</span><span class="v">'+(S.spinT>120?fmt(S.spinT/60,1)+' <small>min</small>':Math.round(S.spinT)+' <small>s</small>')+'</span></div>'+
+    '<div class="row"><span class="k">tip acceleration</span><span class="v">'+fmt(S.aTip/9.81,1)+' <small>g</small></span></div>'+
+    '<div class="row"><span class="k">cusps per orbit</span><span class="v">'+Math.round(S.cusps)+'</span></div>'+
+    '<div class="row '+(S.mr>200?'bad':(S.mr<10?'ok':''))+'"><span class="k">tether ÷ payload</span><span class="v">'+(S.mr>1e6?'>10\u2076\u00d7 impractical':(S.mr>=100?Math.round(S.mr).toLocaleString():fmt(S.mr,1))+'\u00d7')+'</span></div>';
+  // material comparison
+  const mel=document.getElementById('mats');let h='';
+  MATS.forEach((m,i)=>{const mr=massRatio(S.Vt,m.vc);const s=mr>1e6?'>10\u2076\u00d7':(mr>=100?Math.round(mr).toLocaleString()+'\u00d7':mr.toFixed(1)+'\u00d7');h+='<div class="matrow'+(i===P.mat?' sel':'')+'"><span>'+m.n+' <span class="m">('+(m.vc/1000).toFixed(1)+' km/s)</span></span><span>'+s+'</span></div>';});
+  mel.innerHTML=h;
+  // verdict
+  let v;
+  if(S.altBot<0) v='<b class="lo">tip passes inside the Earth</b> ('+Math.round(S.altBot)+' km) \u2014 shorten the tether or raise the station.';
+  else if(S.altBot<80) v='<b class="lo">tip dips below the atmosphere</b> ('+Math.round(S.altBot)+' km) \u2014 it would burn. Shorten the tether or raise the station.';
+  else if(S.mr>500) v='<b class="lo">impractical structure:</b> '+(S.mr>1e6?'>10\u2076\u00d7':Math.round(S.mr).toLocaleString()+'\u00d7')+' tether mass with '+S.mat.n+'. This tip speed needs a stronger material \u2014 try nanotube, or drop the tip speed.';
+  else if(S.mr<8) v='<b class="hi">buildable:</b> '+(S.mr).toFixed(1)+'\u00d7 tether mass with '+S.mat.n+', catch at M'+machBot.toFixed(0)+', release to '+apoStr+'. This is a real architecture.';
+  else v='<b>workable middle:</b> '+(S.mr).toFixed(1)+'\u00d7 tether with '+S.mat.n+'. Catch M'+machBot.toFixed(0)+' \u2192 release to '+apoStr+'. Trade tip speed against tether mass.';
+  document.getElementById('verdict').innerHTML=v;
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;draw(dt);refresh();requestAnimationFrame(tick);}
+
+const $=id=>document.getElementById(id);
+function br(id,key,lid,f){$(id).addEventListener('input',e=>{P[key]=+e.target.value;$(lid).textContent=f?f(P[key]):P[key];});}
+br('alt','alt','lAlt'); br('len','len','lLen'); br('tip','tip','lTip',v=>v.toFixed(1));
+$('mat').addEventListener('change',e=>P.mat=+e.target.value);
+$('bFling').onclick=()=>{const S=solve();fling={th:0,beta:(S.Om*performance.now()/1000*400)%(2*Math.PI)};};
+$('bReset').onclick=()=>{t=0;trail=[];fling=null;};
+window.addEventListener('resize',resize);
+resize();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
