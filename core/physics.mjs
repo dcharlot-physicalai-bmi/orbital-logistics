@@ -171,3 +171,76 @@ export function cwTargetIntercept(r0, v0now, n, t) {
   const mag = (u) => Math.hypot(u[0], u[1]);
   return { v0, vArr, dv1, dv2, dvTotal: mag(dv1) + mag(dv2) };
 }
+
+// --- MPPI: a receding-horizon optimal controller for the capture link ---------
+// Model Predictive Path Integral control on the CW dynamics: sample many control
+// sequences, roll each out, and take the cost-weighted average as the plan. Cost
+// pulls the chaser to a soft berth on the target while holding an approach
+// corridor (small along-track offset near the target) and spending little fuel.
+// This is the on-device, optimal-control counterpart to the hand-tuned loop --
+// the tube-MPC / chance-constrained-RL frontier, runnable in a browser.
+// State s = [x, y, vx, vy] in the target's LVLH frame; control u = [ax, ay].
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function gauss(rng){ // Box-Muller
+  let u=0,v=0; while(u===0)u=rng(); while(v===0)v=rng();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+export function cwStepEuler(s, u, n, dt){
+  const ax = 3*n*n*s[0] + 2*n*s[3] + u[0];
+  const ay = -2*n*s[2] + u[1];
+  return [s[0]+s[2]*dt, s[1]+s[3]*dt, s[2]+ax*dt, s[3]+ay*dt];
+}
+const MPPI_DEFAULTS = {
+  K:220, H:28, dt:1.0, lambda:8, sigma:0.010, umax:0.030, // samples, horizon, s, temp, noise, max accel
+  wPos:2.0, wVel:12.0, wCorr:6.0, wEffort:200, wOvershoot:40, corridorRange:12,
+};
+// Roll out one control sequence; return its total cost.
+function mppiCost(s0, useq, n, o){
+  let s=s0, c=0;
+  for(let h=0; h<useq.length; h++){
+    s = cwStepEuler(s, useq[h], n, o.dt);
+    const rng2 = s[0]*s[0]+s[1]*s[1];
+    c += o.wPos*rng2 + o.wVel*(s[2]*s[2]+s[3]*s[3]) + o.wEffort*(useq[h][0]**2+useq[h][1]**2);
+    if(rng2 < o.corridorRange*o.corridorRange) c += o.wCorr*(s[1]*s[1]); // hold the corridor near the target
+    if(s[0] < 0) c += o.wOvershoot*(s[0]*s[0]);                          // don't drive through the target
+  }
+  return c;
+}
+// One MPPI step: given the current state and warm-start nominal (H x 2), return
+// the optimal nominal sequence (cost-weighted). First entry is the control to apply.
+export function mppiPlan(s, nominal, n, opts={}, seed=1){
+  const o={...MPPI_DEFAULTS, ...opts}, rng=mulberry32(seed);
+  const H=o.H, samples=[], costs=[]; let beta=Infinity;
+  for(let k=0;k<o.K;k++){
+    const useq=new Array(H);
+    for(let h=0;h<H;h++){
+      let ax=nominal[h][0]+gauss(rng)*o.sigma, ay=nominal[h][1]+gauss(rng)*o.sigma;
+      const m=Math.hypot(ax,ay); if(m>o.umax){ax*=o.umax/m;ay*=o.umax/m;}
+      useq[h]=[ax,ay];
+    }
+    const c=mppiCost(s,useq,n,o); samples.push(useq); costs.push(c); if(c<beta)beta=c;
+  }
+  let wsum=0; const w=costs.map(c=>{const e=Math.exp(-(c-beta)/o.lambda); wsum+=e; return e;});
+  const out=new Array(H);
+  for(let h=0;h<H;h++){ let ax=0,ay=0; for(let k=0;k<o.K;k++){ax+=w[k]*samples[k][h][0]; ay+=w[k]*samples[k][h][1];}
+    out[h]=[ax/wsum, ay/wsum]; }
+  return out;
+}
+// Closed-loop capture: run MPPI receding-horizon from s0 until berthed or timeout.
+export function mppiCapture(s0, n, opts={}, seed=1){
+  const o={...MPPI_DEFAULTS, ...opts};
+  let s=s0.slice(), nominal=Array.from({length:o.H},()=>[0,0]), dv=0, captured=false;
+  const traj=[s.slice()]; const maxSteps=opts.maxSteps||400;
+  for(let step=0; step<maxSteps; step++){
+    nominal = mppiPlan(s, nominal, n, o, seed+step);
+    const u = nominal[0];
+    s = cwStepEuler(s, u, n, o.dt);
+    dv += Math.hypot(u[0],u[1])*o.dt;
+    traj.push(s.slice());
+    nominal = [...nominal.slice(1), [0,0]]; // shift the warm start
+    const range=Math.hypot(s[0],s[1]), speed=Math.hypot(s[2],s[3]);
+    if(range<0.5 && speed<0.05 && Math.abs(s[1])<0.4){ captured=true; break; }
+  }
+  return { captured, dvTotal:dv, steps:traj.length-1, trajectory:traj, finalRange:Math.hypot(s[0],s[1]) };
+}

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   tetherMassRatio, sledTrackLength, sledPeakPower, sledEnergyPerKg,
   skyhook, escapeVelocity, orbitalVelocity, compose,
-  meanMotion, cwPropagate, cwTargetIntercept,
+  meanMotion, cwPropagate, cwTargetIntercept, mppiCapture,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -64,6 +64,32 @@ test('CW: a radial offset with zero rate drifts along-track (not a fixed point)'
   const n = meanMotion(500e3);
   const s = cwPropagate([50, 0], [0, 0], n, 2000);
   assert.ok(Math.abs(s.r[1]) > 100, 'radial offset induces along-track drift');
+});
+
+test('MPPI: receding-horizon control captures from a standoff', () => {
+  const n = meanMotion(450e3);
+  const r = mppiCapture([30, 8, 0, 0], n, {}, 7);
+  assert.ok(r.captured, 'MPPI berths the chaser');
+  assert.ok(r.finalRange < 0.5, 'arrives inside the capture tolerance');
+  assert.ok(r.dvTotal > 0 && r.dvTotal < 6, 'a bounded, sane fuel cost');
+});
+
+test('MPPI: holds the approach corridor near the target', () => {
+  const n = meanMotion(450e3);
+  const r = mppiCapture([30, 8, 0, 0], n, {}, 7);
+  // once inside 8 m, the along-track (lateral) offset stays small (in the corridor)
+  const near = r.trajectory.filter(s => Math.hypot(s[0], s[1]) < 8);
+  assert.ok(near.length > 0);
+  assert.ok(Math.max(...near.map(s => Math.abs(s[1]))) < 3.0, 'corridor held near the target');
+});
+
+test('MPPI: same seed is deterministic (reproducible)', () => {
+  const n = meanMotion(450e3);
+  const a = mppiCapture([25, 6, 0, 0], n, {}, 3);
+  const b = mppiCapture([25, 6, 0, 0], n, {}, 3);
+  assert.equal(a.steps, b.steps);
+  near(a.dvTotal, b.dvTotal, 1e-12);
+  near(a.finalRange, b.finalRange, 1e-12);
 });
 
 test('CW: two-impulse targeting reaches the target', () => {

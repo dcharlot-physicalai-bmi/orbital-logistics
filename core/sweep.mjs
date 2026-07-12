@@ -5,10 +5,11 @@
 //   node core/sweep.mjs skyhook     catch/release velocities vs altitude
 //   node core/sweep.mjs compose     best-known architectures per destination
 //   node core/sweep.mjs rpo         two-impulse CW rendezvous cost vs transfer time
+//   node core/sweep.mjs mppi        MPPI receding-horizon capture from several standoffs
 import {
   TETHER_MATERIALS, tetherMassRatio, sledTrackLength, sledPeakPower,
   skyhook, escapeVelocity, DESTINATIONS, compose,
-  meanMotion, cwTargetIntercept,
+  meanMotion, cwTargetIntercept, mppiCapture,
 } from './physics.mjs';
 
 const mode = process.argv[2] || 'help';
@@ -63,6 +64,16 @@ if (mode === 'tether') {
     row(pad(min, 12), pad(m(p.dv1), 9), pad(m(p.dv2), 9), pad(p.dvTotal.toFixed(3), 10));
   }
   console.log('# slower transfers cost less dv (a gentler catch), the tradeoff the certified corridor flies.');
+} else if (mode === 'mppi') {
+  console.log('# MPPI receding-horizon capture at 450 km, various standoffs (radial, along-track)');
+  const n = meanMotion(450e3);
+  row(pad('standoff m', 22), pad('captured', 9), pad('steps', 6), pad('final m', 8), pad('dv m/s', 8));
+  for (const s0 of [[20, 4, 0, 0], [30, 8, 0, 0], [45, 12, 0, 0], [60, 20, 0, 0]]) {
+    const r = mppiCapture(s0, n, {}, 7);
+    row(pad(`(${s0[0]}, ${s0[1]})`, 22), pad(r.captured ? 'yes' : 'NO', 9),
+      pad(r.steps, 6), pad(r.finalRange.toFixed(2), 8), pad(r.dvTotal.toFixed(2), 8));
+  }
+  console.log('# a real optimal controller sampled and rolled out on the CW dynamics, holding the corridor.');
 } else {
-  console.log('usage: node core/sweep.mjs [tether|sled|skyhook|compose|rpo]');
+  console.log('usage: node core/sweep.mjs [tether|sled|skyhook|compose|rpo|mppi]');
 }

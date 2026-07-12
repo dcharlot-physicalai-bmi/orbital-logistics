@@ -35,18 +35,20 @@ The load-bearing equations, extracted from the instruments so they run headless 
 ```
 core/physics.mjs        error function, tether taper, vis-viva, escape,
                         EM-launch track/power, Δv composer, capture Kalman filter,
-                        Clohessy-Wiltshire relative motion + two-impulse RPO targeting
-core/sweep.mjs          CLI: tether | sled | skyhook | compose | rpo
+                        Clohessy-Wiltshire relative motion + two-impulse RPO targeting,
+                        MPPI receding-horizon optimal capture controller
+core/sweep.mjs          CLI: tether | sled | skyhook | compose | rpo | mppi
 core/physics.test.mjs   sanity checks against independently re-derived values
 ```
 
 ```bash
-npm test                    # 11 checks
+npm test                    # 14 checks
 npm run sweep -- tether     # tether mass ratio vs tip speed, per material
 npm run sweep -- sled       # track length / peak power vs exit speed
 npm run sweep -- skyhook    # catch/release vs altitude, against escape at the tip
 npm run sweep -- compose    # a strong known architecture per destination
 npm run sweep -- rpo        # two-impulse CW rendezvous cost vs transfer time
+npm run sweep -- mppi       # MPPI receding-horizon capture from several standoffs
 ```
 
 A few values the tests pin (all independently re-derived):
@@ -56,6 +58,7 @@ A few values the tests pin (all independently re-derived):
 - **Skyhook** — a 600 km station with a 400 km arm releases a payload at **10.56 km/s**, above the **10.40 km/s** escape velocity *at the tip radius* (≈1000 km) — the comparison must be made at the tip, not the station.
 - **Compose** — a single vehicle cannot reach Mars' surface (18 km/s) at all; composed with infrastructure it delivers a healthy payload mass fraction.
 - **RPO** — the Clohessy-Wiltshire model reproduces the classics: two objects separated along-track on one circular orbit hold station, a radial offset drifts along-track, and a two-impulse targeting solve reaches the target and nulls its arrival velocity for a soft berth. This is the analytic backbone under the on-orbit-capture link.
+- **MPPI** — a real Model Predictive Path Integral controller samples control sequences, rolls them out on the CW dynamics, and takes the cost-weighted average as the plan (receding-horizon). It berths a chaser from a standoff while holding the approach corridor at a bounded fuel cost, and is deterministic under a fixed seed. This is the optimal-control counterpart to a hand-tuned loop — the tube-MPC / chance-constrained-RL frontier, runnable on the device.
 
 ## What the topic argues
 
