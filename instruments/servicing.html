@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>On-orbit servicing — compliant module insertion</title>
+<style>
+  :root{ --bg:#0b1024; --panel:rgba(12,18,38,.82); --edge:rgba(207,170,91,.26); --line:#243157;
+    --ink:#eef1f8; --dim:#8aa0bd; --faint:#5b6a8a; --gold:#cfaa5b; --teal:#46c6b0; --blue:#6ea8ff; --red:#ff6a6a;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Inter",system-ui,sans-serif; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:absolute;z-index:5}
+  .top{top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:15px 18px;gap:16px;pointer-events:none}
+  .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;margin:0 0 3px}
+  h1{margin:0;font-size:17px;font-weight:600}
+  .top p{margin:4px 0 0;font-size:12.5px;color:var(--dim);max-width:50ch;line-height:1.45}
+  .stats{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+  .stat{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:8px 12px;min-width:96px;backdrop-filter:blur(9px)}
+  .stat .k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .stat .v{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:2px}
+  .ctl{bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);flex-wrap:wrap;justify-content:center;max-width:94%}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{font-family:var(--mono);font-size:11px;padding:6px 11px;border:none;background:transparent;color:var(--dim);cursor:pointer}
+  .seg button.on{background:var(--gold);color:#0b1024;font-weight:600}
+  .sld{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .sld input{accent-color:var(--gold);width:92px;height:15px}
+  .sld b{color:var(--gold);min-width:44px;text-align:right}
+  .legend{left:18px;bottom:74px;background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:10px 12px;backdrop-filter:blur(10px);max-width:230px}
+  .legend .li{display:flex;align-items:center;gap:7px;font-size:11px;margin:2px 0;color:var(--dim)}
+  .legend .d{width:9px;height:9px;border-radius:2px;flex:none}
+  @media(max-width:760px){ .top p{display:none} .legend{display:none} .stat{min-width:0} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud top">
+  <div>
+    <p class="eyebrow">On-orbit logistics · servicing & assembly</p>
+    <h1>Seat the part by feel, not by force.</h1>
+    <p>Past capture, the chain continues: a manipulator inserts a replacement unit into a berthed satellite. Command an exact position and it jams on the rim; command a gentle force and let the chamfer seat it. Compliance, not precision.</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">Depth</div><div class="v" id="s-d">—</div></div>
+    <div class="stat"><div class="k">Contact force</div><div class="v" id="s-f">—</div></div>
+    <div class="stat"><div class="k">Lateral err</div><div class="v" id="s-e">—</div></div>
+    <div class="stat"><div class="k">Status</div><div class="v" id="s-s">—</div></div>
+  </div>
+</div>
+<div class="hud legend">
+  <div class="li"><span class="d" style="background:#8aa0bd"></span>Berthed satellite + service port</div>
+  <div class="li"><span class="d" style="background:#cfaa5b"></span>Manipulator + replacement unit</div>
+  <div class="li"><span class="d" style="background:#46c6b0"></span>Seated (force closure)</div>
+  <div class="li"><span class="d" style="background:#ff6a6a"></span>Jam (rim contact, rigid)</div>
+</div>
+<div class="hud ctl">
+  <div class="seg"><button id="mC" class="on">Compliant</button><button id="mR">Rigid</button></div>
+  <div class="sld">misalign<input id="mis" type="range" min="0" max="26" step="1" value="14"><b id="lmis">14 mm</b></div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),X=cv.getContext('2d');
+let W,H,DPR=Math.min(devicePixelRatio||1,2);
+function size(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;X.setTransform(DPR,0,0,DPR,0,0);}
+size();addEventListener('resize',size);
+const gv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const P={compliant:true,mis:14};
+// geometry in mm (scene units); port is a socket with a chamfered mouth
+const PORT_HALF=30, CHAMFER=22, CLEAR=6, DEPTH_MAX=90; // clearance = tight fit tolerance
+let E=null;
+function newRun(){
+  const sign=Math.random()<0.5?-1:1;
+  return{ t:0, phase:'APPROACH', depth:0, lat:sign*P.mis, force:0, latForce:0,
+    done:false, seated:false, jam:false, hold:0 };
+}
+function step(e,dt){
+  e.t+=dt;
+  if(e.phase==='APPROACH'){ // arm brings the unit to the port mouth
+    e.depth=Math.min(0,e.depth); // at mouth, depth 0
+    e.phase='INSERT'; return;
+  }
+  // INSERT: advance along axis; off-center the unit touches the chamfer/rim.
+  const adv=(P.compliant?55:62)*dt;            // insertion speed mm/s
+  const atRim=Math.abs(e.lat)>CLEAR;           // edge exceeds the socket clearance
+  const inChamfer=e.depth<CHAMFER;
+  if(P.compliant){
+    // force control: gentle axial push; lateral compliance lets the chamfer center it
+    if(inChamfer && atRim){
+      e.lat-=Math.sign(e.lat)*Math.min(Math.abs(e.lat),120*dt); // slides toward centre
+      e.latForce=9+Math.abs(e.lat)*0.7;
+      e.force=16;
+      e.depth=Math.min(DEPTH_MAX, e.depth+adv*0.5); // slowed by the guiding contact
+    } else {
+      e.latForce=Math.max(0,e.latForce-45*dt);
+      e.force=10;
+      e.depth=Math.min(DEPTH_MAX, e.depth+adv);
+    }
+  } else {
+    // position control: rigid. Off-centre it stalls on the chamfer and force spikes.
+    if(inChamfer && atRim){
+      e.force=Math.min(130,e.force+150*dt);
+      e.latForce=e.force*0.35;
+      if(e.force>75){ e.jam=true; e.done=true; } // no lateral give → jam
+    } else {
+      e.force=12; e.latForce=0; e.depth=Math.min(DEPTH_MAX, e.depth+adv);
+    }
+  }
+  if(e.depth>=DEPTH_MAX-0.5 && Math.abs(e.lat)<=CLEAR+0.5){
+    e.hold+=dt; if(e.hold>0.2){ e.seated=true; e.done=true; }
+  }
+  if(e.t>9){ e.done=true; if(!e.seated) e.jam=true; }
+}
+// ---- draw ----
+let last=performance.now(),wait=0,stars=[];
+for(let i=0;i<70;i++)stars.push({x:Math.random(),y:Math.random(),r:Math.random()*1.1+.2,a:Math.random()*.45+.2});
+function arm(baseX,baseY,ex,ey){
+  // simple 2-link manipulator from base to end-effector (ex,ey), elbow-up
+  const dx=ex-baseX,dy=ey-baseY,D=Math.hypot(dx,dy),L=Math.max(D/2+40,D*0.6);
+  const a=Math.atan2(dy,dx), h=Math.sqrt(Math.max(0,L*L-(D/2)*(D/2)));
+  const mxp=baseX+dx/2 - (dy/D)*h, myp=baseY+dy/2 + (dx/D)*h;
+  X.strokeStyle='rgba(207,170,91,.85)';X.lineWidth=7;X.lineCap='round';
+  X.beginPath();X.moveTo(baseX,baseY);X.lineTo(mxp,myp);X.lineTo(ex,ey);X.stroke();
+  X.fillStyle='#1a2444';X.strokeStyle='rgba(207,170,91,.6)';X.lineWidth=2;
+  for(const [jx,jy] of [[baseX,baseY],[mxp,myp]]){X.beginPath();X.arc(jx,jy,7,0,6.28);X.fill();X.stroke();}
+}
+function draw(dt){
+  X.clearRect(0,0,W,H);
+  for(const s of stars){X.fillStyle='rgba(207,220,255,'+s.a+')';X.beginPath();X.arc(s.x*W,s.y*H,s.r,0,6.28);X.fill();}
+  const e=E; if(!e)return;
+  const cx=W*0.60, cy=H*0.48, sc=Math.min(W,H)/460; // mm -> px
+  // berthed satellite body (right), with a service port opening to the left
+  X.save();X.translate(cx,cy);
+  X.fillStyle='#161f3c';X.strokeStyle='rgba(138,160,189,.8)';X.lineWidth=2;
+  X.beginPath();X.roundRect(10,-150*sc,190*sc,300*sc,10);X.fill();X.stroke();
+  X.fillStyle='rgba(110,168,255,.14)';X.fillRect(70*sc,-150*sc,110*sc,30*sc);X.fillRect(70*sc,120*sc,110*sc,30*sc);
+  // service port: a socket with chamfered mouth, axis horizontal (opening left at x=10)
+  const ph=PORT_HALF*sc, ch=CHAMFER*sc, dep=DEPTH_MAX*sc;
+  X.fillStyle='#0b1024';X.strokeStyle='rgba(138,160,189,.9)';X.lineWidth=2;
+  X.beginPath();
+  X.moveTo(10, -ph-ch); X.lineTo(10, ph+ch);            // mouth outer
+  X.lineTo(10+ch, ph); X.lineTo(10+dep, ph);            // chamfer down + socket bottom wall
+  X.lineTo(10+dep, -ph); X.lineTo(10+ch, -ph); X.closePath();
+  X.fill();X.stroke();
+  // chamfer highlight
+  X.strokeStyle='rgba(207,170,91,.5)';X.lineWidth=1.5;
+  X.beginPath();X.moveTo(10,-ph-ch);X.lineTo(10+ch,-ph);X.moveTo(10,ph+ch);X.lineTo(10+ch,ph);X.stroke();
+  X.restore();
+  // the replacement unit (ORU): a block on the port axis, inserted from the left
+  const seatedCol=e.seated?gv('--teal'):(e.jam?gv('--red'):gv('--gold'));
+  const ux=cx+10 - (DEPTH_MAX-e.depth)*sc;      // right face position (advances right)
+  const uy=cy + e.lat*sc;
+  const uw=70*sc, uh=(PORT_HALF-CLEAR)*2*sc;
+  X.fillStyle='#22305a';X.strokeStyle=seatedCol;X.lineWidth=2.4;
+  X.beginPath();X.roundRect(ux-uw, uy-uh/2, uw, uh, 4);X.fill();X.stroke();
+  X.fillStyle=seatedCol;X.globalAlpha=.5;X.fillRect(ux-6, uy-uh/2, 6, uh);X.globalAlpha=1; // tip
+  // manipulator arm from lower-left to the unit's back face
+  arm(W*0.08, H*0.86, ux-uw, uy);
+  // force vector at the tip
+  if(e.force>1){
+    const fl=Math.min(60,e.force*0.5);
+    X.strokeStyle=e.jam?gv('--red'):gv('--teal');X.lineWidth=2.5;
+    X.beginPath();X.moveTo(ux,uy);X.lineTo(ux+fl,uy);X.stroke(); // axial
+    if(e.latForce>1){const s=Math.sign(e.lat)||1;X.beginPath();X.moveTo(ux-10,uy);X.lineTo(ux-10,uy-s*Math.min(40,e.latForce));X.stroke();}
+  }
+  // labels
+  X.font='13px '+gv('--mono');X.textAlign='center';
+  if(e.done){X.fillStyle=e.seated?gv('--teal'):gv('--red');X.fillText(e.seated?'✓ SEATED · force closure':'✕ JAMMED on the rim — needs compliance',cx,cy-H*0.30);}
+  else{X.fillStyle='rgba(139,160,189,.85)';X.fillText(P.compliant?'force control · letting the chamfer guide it':'position control · driving to the commanded pose',cx,cy-H*0.30);}
+  X.textAlign='left';
+}
+function panel(){
+  document.getElementById('s-d').textContent=Math.max(0,E?E.depth:0).toFixed(0)+' mm';
+  const f=E?E.force:0;
+  document.getElementById('s-f').innerHTML='<span style="color:'+(f>70?gv('--red'):f>25?gv('--gold'):gv('--teal'))+'">'+f.toFixed(0)+' N</span>';
+  document.getElementById('s-e').textContent=(E?Math.abs(E.lat):0).toFixed(0)+' mm';
+  const st=E&&E.done?(E.seated?'SEATED':'JAMMED'):(E?E.phase:'—');
+  const c=E&&E.done?(E.seated?gv('--teal'):gv('--red')):gv('--ink');
+  document.getElementById('s-s').innerHTML='<span style="color:'+c+'">'+st+'</span>';
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
+  if(E&&!E.done)step(E,dt);
+  if(E&&E.done){wait+=dt;if(wait>1.5){wait=0;E=newRun();}}
+  draw(dt);panel();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+$('mC').onclick=()=>{P.compliant=true;$('mC').classList.add('on');$('mR').classList.remove('on');E=newRun();wait=0;};
+$('mR').onclick=()=>{P.compliant=false;$('mR').classList.add('on');$('mC').classList.remove('on');E=newRun();wait=0;};
+$('mis').addEventListener('input',ev=>{P.mis=+ev.target.value;$('lmis').textContent=P.mis+' mm';});
+E=newRun();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
