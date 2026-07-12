@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   tetherMassRatio, sledTrackLength, sledPeakPower, sledEnergyPerKg,
   skyhook, escapeVelocity, orbitalVelocity, compose,
+  meanMotion, cwPropagate, cwTargetIntercept,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -45,4 +46,34 @@ test('compose: LEO offload lifts payload fraction over all-rocket', () => {
   assert.ok(r.soloFeasible);
   assert.ok(r.gain > 5, 'meaningful payload gain');
   near(r.share, 4.7 / 9.4, 0.02);
+});
+
+test('CW: mean motion at 400 km gives a ~92 min period', () => {
+  const n = meanMotion(400e3);
+  near((2 * Math.PI / n) / 60, 92.5, 1.0); // minutes
+});
+
+test('CW: two objects along-track on the same orbit stay put', () => {
+  const n = meanMotion(500e3);
+  const s = cwPropagate([0, 120], [0, 0], n, 1800); // 120 m ahead, half an hour
+  near(s.r[0], 0, 1e-6); near(s.r[1], 120, 1e-6);
+  near(s.v[0], 0, 1e-9); near(s.v[1], 0, 1e-9);
+});
+
+test('CW: a radial offset with zero rate drifts along-track (not a fixed point)', () => {
+  const n = meanMotion(500e3);
+  const s = cwPropagate([50, 0], [0, 0], n, 2000);
+  assert.ok(Math.abs(s.r[1]) > 100, 'radial offset induces along-track drift');
+});
+
+test('CW: two-impulse targeting reaches the target', () => {
+  const n = meanMotion(450e3);
+  const r0 = [40, 25], t = 900; // 40 m radial, 25 m along-track; 15 min transfer
+  const plan = cwTargetIntercept(r0, [0, 0], n, t);
+  const arr = cwPropagate(r0, plan.v0, n, t); // fly the solved v0
+  near(arr.r[0], 0, 1e-4); near(arr.r[1], 0, 1e-4); // arrives at origin
+  assert.ok(plan.dvTotal > 0 && plan.dvTotal < 10, 'a sane, bounded two-burn cost');
+  // dv2 nulls the arrival velocity for a soft berth
+  near(arr.v[0] + plan.dv2[0], 0, 1e-6);
+  near(arr.v[1] + plan.dv2[1], 0, 1e-6);
 });

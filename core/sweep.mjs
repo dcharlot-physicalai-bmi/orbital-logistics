@@ -4,9 +4,11 @@
 //   node core/sweep.mjs sled        track length / power vs exit speed
 //   node core/sweep.mjs skyhook     catch/release velocities vs altitude
 //   node core/sweep.mjs compose     best-known architectures per destination
+//   node core/sweep.mjs rpo         two-impulse CW rendezvous cost vs transfer time
 import {
   TETHER_MATERIALS, tetherMassRatio, sledTrackLength, sledPeakPower,
   skyhook, escapeVelocity, DESTINATIONS, compose,
+  meanMotion, cwTargetIntercept,
 } from './physics.mjs';
 
 const mode = process.argv[2] || 'help';
@@ -51,6 +53,16 @@ if (mode === 'tether') {
       pad(r.onboard.toFixed(1), 8), pad((r.payloadFraction * 100).toFixed(1) + '%', 8),
       r.soloFeasible ? '×' + r.gain.toFixed(1) : 'unreachable alone');
   }
+} else if (mode === 'rpo') {
+  console.log('# two-impulse Clohessy-Wiltshire rendezvous from 100 m (radial+along-track) at 450 km');
+  const n = meanMotion(450e3), r0 = [70, 70];
+  row(pad('transfer min', 12), pad('dv1 m/s', 9), pad('dv2 m/s', 9), pad('total m/s', 10));
+  for (const min of [5, 10, 20, 40, 60]) {
+    const p = cwTargetIntercept(r0, [0, 0], n, min * 60);
+    const m = (u) => Math.hypot(u[0], u[1]).toFixed(3);
+    row(pad(min, 12), pad(m(p.dv1), 9), pad(m(p.dv2), 9), pad(p.dvTotal.toFixed(3), 10));
+  }
+  console.log('# slower transfers cost less dv (a gentler catch), the tradeoff the certified corridor flies.');
 } else {
-  console.log('usage: node core/sweep.mjs [tether|sled|skyhook|compose]');
+  console.log('usage: node core/sweep.mjs [tether|sled|skyhook|compose|rpo]');
 }

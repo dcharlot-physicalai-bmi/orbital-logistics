@@ -119,3 +119,55 @@ export function kfStep(k, z, dt, r) {
   k.P = [(1 - K0) * P00, (1 - K0) * P01, P10 - K1 * P00, P11 - K1 * P01];
   return k;
 }
+
+// --- Rendezvous & proximity operations: Clohessy-Wiltshire relative motion ---
+// Linearised relative motion of a chaser about a target on a circular orbit, in
+// the target's LVLH frame (x = radial/out, y = along-track). Cross-track (z)
+// decouples as a simple harmonic oscillator. This is the analytic backbone under
+// the on-orbit-capture link: the estimator resolves the state, and CW says how a
+// burn moves it. Mean motion n = sqrt(mu / a^3).
+export function meanMotion(altitude_m) {
+  const a = R_EARTH + altitude_m;
+  return Math.sqrt(MU_EARTH / (a * a * a)); // rad/s
+}
+
+// The 2x2 planar CW state-transition blocks at elapsed time t. Returns rr, rv,
+// vr, vv such that r(t) = rr*r0 + rv*v0 and v(t) = vr*r0 + vv*v0.
+export function cwStm(n, t) {
+  const s = Math.sin(n * t), c = Math.cos(n * t), nt = n * t;
+  return {
+    rr: [[4 - 3 * c, 0], [6 * (s - nt), 1]],
+    rv: [[s / n, 2 * (1 - c) / n], [2 * (c - 1) / n, (4 * s - 3 * nt) / n]],
+    vr: [[3 * n * s, 0], [6 * n * (c - 1), 0]],
+    vv: [[c, 2 * s], [-2 * s, 4 * c - 3]],
+  };
+}
+const mv = (M, v) => [M[0][0] * v[0] + M[0][1] * v[1], M[1][0] * v[0] + M[1][1] * v[1]];
+const inv2 = (M) => { const d = M[0][0] * M[1][1] - M[0][1] * M[1][0];
+  return [[M[1][1] / d, -M[0][1] / d], [-M[1][0] / d, M[0][0] / d]]; };
+
+// Propagate a planar relative state (r0=[x,y] m, v0=[vx,vy] m/s) forward by t.
+export function cwPropagate(r0, v0, n, t) {
+  const P = cwStm(n, t);
+  return {
+    r: [mv(P.rr, r0)[0] + mv(P.rv, v0)[0], mv(P.rr, r0)[1] + mv(P.rv, v0)[1]],
+    v: [mv(P.vr, r0)[0] + mv(P.vv, v0)[0], mv(P.vr, r0)[1] + mv(P.vv, v0)[1]],
+  };
+}
+
+// Two-impulse targeting: from relative state (r0, v0now), find the departure
+// velocity v0 that arrives at the origin (the target) after time t, and price
+// both burns. dv1 injects onto the transfer; dv2 nulls the arrival velocity for
+// a soft berth. Returns metres/second. This is the RPO maneuver the certified
+// corridor is flown along.
+export function cwTargetIntercept(r0, v0now, n, t) {
+  const P = cwStm(n, t);
+  // r(t)=0  =>  rv*v0 = -rr*r0  =>  v0 = -rv^{-1} (rr r0)
+  const rrr = mv(P.rr, r0);
+  const v0 = mv(inv2(P.rv), [-rrr[0], -rrr[1]]);
+  const vArr = [mv(P.vr, r0)[0] + mv(P.vv, v0)[0], mv(P.vr, r0)[1] + mv(P.vv, v0)[1]];
+  const dv1 = [v0[0] - v0now[0], v0[1] - v0now[1]];
+  const dv2 = [-vArr[0], -vArr[1]];
+  const mag = (u) => Math.hypot(u[0], u[1]);
+  return { v0, vArr, dv1, dv2, dvTotal: mag(dv1) + mag(dv2) };
+}
