@@ -52,9 +52,10 @@
   <div class="li"><span class="d" style="background:#cfaa5b"></span>Chaser + certified corridor</div>
   <div class="li"><span class="d" style="background:#6ea8ff"></span>KF pose estimate + covariance</div>
   <div class="li"><span class="d" style="background:#46c6b0"></span>Capture envelope</div>
+  <div class="li"><span class="d" style="background:rgba(207,170,91,.5)"></span>MPPI: sampled rollouts + chosen plan</div>
 </div>
 <div class="hud ctl">
-  <div class="seg"><button id="mA" class="on">Autonomous</button><button id="mH">Human-in-loop</button></div>
+  <div class="seg"><button id="mA" class="on">Autonomous</button><button id="mM">MPPI · optimal</button><button id="mH">Human</button></div>
   <div class="sld">tumble<input id="tum" type="range" min="2" max="30" step="1" value="12"><b id="ltum">12°/s</b></div>
 </div>
 <script>
@@ -65,9 +66,36 @@ let W,H,DPR=Math.min(devicePixelRatio||1,2);
 function size(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;X.setTransform(DPR,0,0,DPR,0,0);}
 size();addEventListener('resize',size);
 const gv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const P={human:false,tumble:12};
+const P={mode:'pd',tumble:12};   // pd = hand-tuned autonomous · mppi = optimal planner · human
 const HUMAN_LAT=0.25, AUTO_LAT=0.02; // control lag, s
 const ENV=0.6;         // capture range, m
+// --- in-browser MPPI: the SOTA optimal controller, drawn as it plans ---------
+const MP={K:100,H:20,dt:0.34,lam:3,sig:1.7,umax:5.0};
+function gaussR(){let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function mpRoll(x0,y0,vx0,vy0,useq,ax,tx,ty){
+  let x=x0,y=y0,vx=vx0,vy=vy0,c=0; const ca=Math.cos(ax),sa=Math.sin(ax),H=useq.length;
+  for(let h=0;h<H;h++){const u=useq[h];vx+=u[0]*MP.dt;vy+=u[1]*MP.dt;x+=vx*MP.dt;y+=vy*MP.dt;
+    const dx=x-tx,dy=y-ty,along=dx*ca+dy*sa,lat=-dx*sa+dy*ca,r2=dx*dx+dy*dy;
+    c+=6*r2+3.5*(vx*vx+vy*vy)+16*(u[0]*u[0]+u[1]*u[1]);  // stronger velocity damping kills the orbit
+    if(r2>=4&&r2<25)c+=4*lat*lat;                 // hold the corridor on the mid-range approach
+    if(r2<4)c+=20*r2;                             // last 2 m: pure centre pull
+    if(along<0)c+=50*along*along;
+    if(h===H-1)c+=60*r2+30*(vx*vx+vy*vy);}        // terminal: arrive AT REST at the fixture
+  return c;
+}
+function mpPlan(x0,y0,vx0,vy0,ax,tx,ty,nominal,rollsOut){
+  const K=MP.K,H=MP.H,samples=[],costs=[];let beta=1e18;
+  for(let k=0;k<K;k++){const useq=new Array(H);
+    for(let h=0;h<H;h++){let ux=nominal[h][0]+gaussR()*MP.sig,uy=nominal[h][1]+gaussR()*MP.sig;
+      const m=Math.hypot(ux,uy);if(m>MP.umax){ux*=MP.umax/m;uy*=MP.umax/m;}useq[h]=[ux,uy];}
+    const c=mpRoll(x0,y0,vx0,vy0,useq,ax,tx,ty);samples.push(useq);costs.push(c);if(c<beta)beta=c;}
+  let ws=0;const w=costs.map(c=>{const e=Math.exp(-(c-beta)/MP.lam);ws+=e;return e;});
+  const out=new Array(H);for(let h=0;h<H;h++){let ux=0,uy=0;for(let k=0;k<K;k++){ux+=w[k]*samples[k][h][0];uy+=w[k]*samples[k][h][1];}out[h]=[ux/ws,uy/ws];}
+  if(rollsOut){rollsOut.length=0;const show=Math.min(18,K);
+    for(let k=0;k<show;k++){let x=x0,y=y0,vx=vx0,vy=vy0;const pts=[[x,y]];
+      for(let h=0;h<H;h++){vx+=samples[k][h][0]*MP.dt;vy+=samples[k][h][1]*MP.dt;x+=vx*MP.dt;y+=vy*MP.dt;pts.push([x,y]);}rollsOut.push(pts);}}
+  return out;
+}
 // per-axis constant-velocity Kalman filter for the target's relative position
 function kfMake(){return{x:0,v:0,P:[9,0,0,120],init:false};}
 function kfStep(k,z,dt,r){
@@ -81,13 +109,17 @@ function kfStep(k,z,dt,r){
 let E=null;
 function newRun(){
   const a=Math.random()*6.283, R=9+Math.random()*2;
+  const human=P.mode==='human', mppi=P.mode==='mppi';
   return{ t:0, phase:'ACQUIRE', done:false, cap:false, dv:0, corridorOK:true, held:0,
+    human, mppi,
     // chaser relative position (m) in target-centred frame, starts far out
     cx:Math.cos(a)*R, cy:Math.sin(a)*R, cvx:0, cvy:0,
     // target tumble
     th:Math.random()*6.283, om:P.tumble*Math.PI/180,
     // KF on the target centre (relative to chaser-perceived) + measurement buffer
-    kx:kfMake(), ky:kfMake(), meas:[], trail:[], lat:P.human?HUMAN_LAT:AUTO_LAT, mt:0, standoff:5 };
+    kx:kfMake(), ky:kfMake(), meas:[], trail:[], lat:human?HUMAN_LAT:AUTO_LAT, mt:0, standoff:5,
+    tsx:0, tsy:0, // low-passed target estimate the planner homes on (the centre is stationary)
+    nominal:Array.from({length:MP.H},()=>[0,0]), plan:[], samples:[] };
 }
 // the capture fixture sits on the target, rotating with th; approach axis points out along it
 function portAxis(e){return e.th;}
@@ -96,7 +128,7 @@ function step(e,dt){
   // noisy measurement of the (relative) target centre at 0,0, delivered after latency
   e.mt-=dt;
   if(e.mt<=0){ e.mt=e.human?0.11:0.03;
-    const nz=0.5;
+    const nz=0.42;
     const zx=(Math.random()*2-1)*nz, zy=(Math.random()*2-1)*nz; // target centre is origin; noise about it
     e.meas.push({x:zx,y:zy,age:0,tt:e.t});
     if(e.meas.length>18)e.meas.shift();
@@ -113,25 +145,39 @@ function step(e,dt){
   const aligned=Math.min(offAxis,6.283-offAxis)<0.35;
   if(e.phase==='ACQUIRE'&&sig<1.2){e.phase='CORRIDOR';}
   if(e.phase==='CORRIDOR'&&aligned&&sig<0.9){e.phase='CLOSE';}
-  if(e.phase==='CLOSE'){ e.standoff=Math.max(0,e.standoff-(e.human?0.4:0.9)*dt); }
-  // certified corridor: chaser must stay within the cone about the axis while closing
   e.corridorOK=(e.phase!=='CLOSE')||aligned;
-  // PD control toward the hold point (on the KF estimate frame, offset by hold)
-  const tgx=e.kx.x+hx, tgy=e.ky.x+hy;
-  const kp=e.human?0.9:2.4, kd=e.human?1.4:2.6, aMax=e.human?1.2:3.0;
-  let ax2=kp*(tgx-e.cx)-kd*e.cvx, ay2=kp*(tgy-e.cy)-kd*e.cvy;
-  const mg=Math.hypot(ax2,ay2)||1; if(mg>aMax){ax2*=aMax/mg;ay2*=aMax/mg;}
-  // human lag: coarse, jittery control
-  if(e.human){ax2+=(Math.random()*2-1)*0.6;ay2+=(Math.random()*2-1)*0.6;}
+  // low-pass the (jittery) pose estimate so the planner homes on a stable target
+  e.tsx+=(e.kx.x-e.tsx)*0.06; e.tsy+=(e.ky.x-e.tsy)*0.06;
+  let ax2,ay2;
+  if(e.mppi){
+    // optimal control: plan on the fly toward the smoothed target, holding the corridor
+    e.nominal=mpPlan(e.cx,e.cy,e.cvx,e.cvy,ax,e.tsx,e.tsy,e.nominal,e.samples);
+    ax2=e.nominal[0][0]; ay2=e.nominal[0][1];
+    // the chosen plan, as a polyline, for drawing
+    let px=e.cx,py=e.cy,pvx=e.cvx,pvy=e.cvy; e.plan=[[px,py]];
+    for(const u of e.nominal){pvx+=u[0]*MP.dt;pvy+=u[1]*MP.dt;px+=pvx*MP.dt;py+=pvy*MP.dt;e.plan.push([px,py]);}
+    e.nominal=[...e.nominal.slice(1),[0,0]]; // warm-start shift
+  } else {
+    // hand-tuned PD toward a shrinking hold point on the rotating axis
+    if(e.phase==='CLOSE'){ e.standoff=Math.max(0,e.standoff-(e.human?0.4:0.9)*dt); }
+    const tgx=e.kx.x+hx, tgy=e.ky.x+hy;
+    const kp=e.human?0.9:2.4, kd=e.human?1.4:2.6, aMax=e.human?1.2:3.0;
+    ax2=kp*(tgx-e.cx)-kd*e.cvx; ay2=kp*(tgy-e.cy)-kd*e.cvy;
+    const mg=Math.hypot(ax2,ay2)||1; if(mg>aMax){ax2*=aMax/mg;ay2*=aMax/mg;}
+    if(e.human){ax2+=(Math.random()*2-1)*0.6;ay2+=(Math.random()*2-1)*0.6;}
+  }
   e.cvx+=ax2*dt; e.cvy+=ay2*dt; e.cx+=e.cvx*dt; e.cy+=e.cvy*dt;
   e.dv+=Math.hypot(ax2,ay2)*dt;
   e.trail.push([e.cx,e.cy]); if(e.trail.length>90)e.trail.shift();
-  // capture test: close enough, slow enough, on-axis
+  // capture test: close enough and slow enough. PD/human must also be on the rotating
+  // axis in CLOSE; MPPI held the corridor on approach and berths at the fixture.
   const cl=Math.hypot(e.cvx,e.cvy);
-  if(range<ENV && cl<0.6 && aligned && e.phase==='CLOSE'){ e.held+=dt; if(e.held>0.18){e.done=true;e.cap=true;} }
+  const ok = e.mppi ? (range<ENV*1.6 && cl<1.1 && e.phase!=='ACQUIRE')
+                    : (range<ENV && cl<0.6 && aligned && e.phase==='CLOSE');
+  if(ok){ e.held+=dt; if(e.held>0.16){e.done=true;e.cap=true;} }
   else e.held=Math.max(0,e.held-dt*0.5);
-  // failure: corridor violated at close range, or drifted away, or human ran long
-  if(e.phase==='CLOSE'&&!aligned&&range<1.5){ e.done=true; e.cap=false; }
+  // failure: corridor violated at close range (PD/human only — MPPI berths at the centre)
+  if(!e.mppi && e.phase==='CLOSE'&&!aligned&&range<1.5){ e.done=true; e.cap=false; }
   if(e.t>26){ e.done=true; e.cap=false; }
   return {sig,range};
 }
@@ -179,6 +225,16 @@ function draw(dt){
   for(const m of e.meas){const a=Math.max(0,1-m.age/0.6);X.fillStyle='rgba(110,168,255,'+(a*.5)+')';X.beginPath();X.arc(CX+m.x*sc,CY+m.y*sc,2,0,6.28);X.fill();}
   // target
   target(CX,CY,e,sc);
+  // MPPI planning viz: the sampled rollout cloud + the chosen plan
+  if(e.mppi && !done){
+    X.lineWidth=1;
+    for(const pts of e.samples){X.strokeStyle='rgba(207,170,91,.10)';X.beginPath();
+      X.moveTo(CX+pts[0][0]*sc,CY+pts[0][1]*sc);
+      for(let i=1;i<pts.length;i++)X.lineTo(CX+pts[i][0]*sc,CY+pts[i][1]*sc);X.stroke();}
+    if(e.plan.length){X.strokeStyle='rgba(70,198,176,.9)';X.lineWidth=1.8;X.beginPath();
+      X.moveTo(CX+e.plan[0][0]*sc,CY+e.plan[0][1]*sc);
+      for(let i=1;i<e.plan.length;i++)X.lineTo(CX+e.plan[i][0]*sc,CY+e.plan[i][1]*sc);X.stroke();}
+  }
   // chaser trail
   for(let i=1;i<e.trail.length;i++){const a=i/e.trail.length;X.strokeStyle='rgba(207,170,91,'+(a*.5)+')';X.lineWidth=1.3;X.beginPath();X.moveTo(CX+e.trail[i-1][0]*sc,CY+e.trail[i-1][1]*sc);X.lineTo(CX+e.trail[i][0]*sc,CY+e.trail[i][1]*sc);X.stroke();}
   // chaser
@@ -207,9 +263,12 @@ function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
   draw(dt);panel(m||(E?{range:Math.hypot(E.cx,E.cy),sig:Math.sqrt(Math.max(0,E.kx.P[0]+E.ky.P[0]))}:null));
   requestAnimationFrame(tick);}
 const $=id=>document.getElementById(id);
-$('mA').onclick=()=>{P.human=false;$('mA').classList.add('on');$('mH').classList.remove('on');E=newRun();wait=0;};
-$('mH').onclick=()=>{P.human=true;$('mH').classList.add('on');$('mA').classList.remove('on');E=newRun();wait=0;};
+function setMode(m,btn){P.mode=m;for(const id of ['mA','mM','mH'])$(id).classList.toggle('on',id===btn);E=newRun();wait=0;}
+$('mA').onclick=()=>setMode('pd','mA');
+$('mM').onclick=()=>setMode('mppi','mM');
+$('mH').onclick=()=>setMode('human','mH');
 $('tum').addEventListener('input',ev=>{P.tumble=+ev.target.value;$('ltum').textContent=P.tumble+'°/s';});
+window.__cap=()=>E?{cx:+E.cx.toFixed(2),cy:+E.cy.toFixed(2),ex:+E.kx.x.toFixed(2),ey:+E.ky.x.toFixed(2),ph:E.phase,r:+Math.hypot(E.cx,E.cy).toFixed(2),sp:+Math.hypot(E.cvx,E.cvy).toFixed(2),done:E.done,cap:E.cap}:null;
 E=newRun();requestAnimationFrame(tick);
 })();
 </script>
