@@ -5,6 +5,7 @@ import {
   tetherMassRatio, sledTrackLength, sledPeakPower, sledEnergyPerKg,
   skyhook, escapeVelocity, orbitalVelocity, compose,
   meanMotion, cwPropagate, cwTargetIntercept, mppiCapture,
+  rigidBodyStep, rotEnergy, angMomentum, qRotate,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -81,6 +82,31 @@ test('MPPI: holds the approach corridor near the target', () => {
   const near = r.trajectory.filter(s => Math.hypot(s[0], s[1]) < 8);
   assert.ok(near.length > 0);
   assert.ok(Math.max(...near.map(s => Math.abs(s[1]))) < 3.0, 'corridor held near the target');
+});
+
+test('6-DOF: torque-free tumble conserves energy and angular momentum', () => {
+  const I = [1.0, 2.5, 3.0];
+  let q = [1, 0, 0, 0], w = [0.6, 0.2, 0.4];       // a genuine 3-axis tumble
+  const E0 = rotEnergy(w, I), L0 = angMomentum(w, I);
+  for (let k = 0; k < 4000; k++) ({ q, w } = rigidBodyStep(q, w, I, 0.01));
+  near(rotEnergy(w, I), E0, 1e-3 * E0);            // energy invariant
+  near(angMomentum(w, I), L0, 1e-3 * L0);          // |L| invariant
+  near(Math.hypot(...q), 1, 1e-9);                 // quaternion stays unit
+});
+
+test('6-DOF: intermediate-axis spin is unstable (tennis-racket theorem)', () => {
+  const I = [1.0, 2.0, 3.0];
+  // spin almost purely about the intermediate axis (2) with a tiny perturbation
+  let q = [1, 0, 0, 0], w = [0.02, 1.0, 0.02];
+  let maxOff = 0;
+  for (let k = 0; k < 3000; k++) { ({ q, w } = rigidBodyStep(q, w, I, 0.01)); maxOff = Math.max(maxOff, Math.abs(w[0]) + Math.abs(w[2])); }
+  assert.ok(maxOff > 0.5, 'the off-axis rates grow large — the flip is unstable');
+});
+
+test('6-DOF: qRotate preserves length and identity', () => {
+  near(Math.hypot(...qRotate([1, 0, 0, 0], [1, 2, 3])), Math.hypot(1, 2, 3), 1e-9);
+  const p = qRotate([Math.cos(0.5), 0, 0, Math.sin(0.5)], [1, 0, 0]); // 1 rad about z
+  near(Math.hypot(...p), 1, 1e-9);
 });
 
 test('MPPI: same seed is deterministic (reproducible)', () => {

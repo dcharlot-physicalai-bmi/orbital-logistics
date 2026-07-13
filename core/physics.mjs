@@ -227,6 +227,50 @@ export function mppiPlan(s, nominal, n, opts={}, seed=1){
     out[h]=[ax/wsum, ay/wsum]; }
   return out;
 }
+// --- 6-DOF: torque-free rigid-body tumble of a non-cooperative target ----------
+// A dead satellite tumbles under no torque. Its attitude follows Euler's equations
+// on the principal inertias I=[I1,I2,I3], integrated with the quaternion kinematics.
+// This is the honest motion the pose estimator must track (not a fixed-axis spin):
+// for I1<I2<I3 rotation about the intermediate axis is unstable (the tennis-racket
+// theorem), so a real tumble wanders. Two quantities are invariant and let us check
+// the integrator: the rotational kinetic energy and the angular-momentum magnitude.
+export function eulerAngularAccel(w, I) {
+  return [
+    (I[1] - I[2]) / I[0] * w[1] * w[2],
+    (I[2] - I[0]) / I[1] * w[2] * w[0],
+    (I[0] - I[1]) / I[2] * w[0] * w[1],
+  ];
+}
+// quaternion (w,x,y,z) times pure-vector angular rate -> qdot = 0.5 q ⊗ (0,ω)
+function qMulVec(q, w) {
+  const [qw, qx, qy, qz] = q, [wx, wy, wz] = w;
+  return [
+    0.5 * (-qx * wx - qy * wy - qz * wz),
+    0.5 * (qw * wx + qy * wz - qz * wy),
+    0.5 * (qw * wy - qx * wz + qz * wx),
+    0.5 * (qw * wz + qx * wy - qy * wx),
+  ];
+}
+export function rigidBodyStep(q, w, I, dt) {
+  // RK2 (midpoint) on the coupled attitude + rate, then renormalize the quaternion
+  const a1 = eulerAngularAccel(w, I), qd1 = qMulVec(q, w);
+  const wm = w.map((v, i) => v + a1[i] * dt / 2);
+  const qm = q.map((v, i) => v + qd1[i] * dt / 2);
+  const a2 = eulerAngularAccel(wm, I), qd2 = qMulVec(qm, wm);
+  const wn = w.map((v, i) => v + a2[i] * dt);
+  let qn = q.map((v, i) => v + qd2[i] * dt);
+  const n = Math.hypot(...qn) || 1; qn = qn.map(v => v / n);
+  return { q: qn, w: wn };
+}
+export const rotEnergy = (w, I) => 0.5 * (I[0] * w[0] ** 2 + I[1] * w[1] ** 2 + I[2] * w[2] ** 2);
+export const angMomentum = (w, I) => Math.hypot(I[0] * w[0], I[1] * w[1], I[2] * w[2]);
+// rotate a body-frame point into the world by the quaternion
+export function qRotate(q, p) {
+  const [qw, qx, qy, qz] = q, [px, py, pz] = p;
+  const tx = 2 * (qy * pz - qz * py), ty = 2 * (qz * px - qx * pz), tz = 2 * (qx * py - qy * px);
+  return [px + qw * tx + qy * tz - qz * ty, py + qw * ty + qz * tx - qx * tz, pz + qw * tz + qx * ty - qy * tx];
+}
+
 // Closed-loop capture: run MPPI receding-horizon from s0 until berthed or timeout.
 export function mppiCapture(s0, n, opts={}, seed=1){
   const o={...MPPI_DEFAULTS, ...opts};
