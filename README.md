@@ -71,3 +71,21 @@ MIT (`LICENSE`). Δv budgets are representative mission values; the mass-ratio, 
 ---
 
 *Institute for Physical AI @ BMI · The Charlot Lab. Part of the living corpus at [physicalai-bmi.org/research/charlot-lab](https://physicalai-bmi.org/research/charlot-lab).*
+
+## RPO-Bench
+
+An open, deterministic benchmark for the two hard links — non-cooperative **capture** (control) and monocular 6-DOF **pose** (perception). Fixed scenarios, fixed seeds, bit-identical every run, in Node or in a browser.
+
+```bash
+node bench/rpo_bench.mjs     # prints the leaderboard, writes bench/results.json
+```
+
+Baselines (reproducible):
+
+| Capture (40 scenarios) | success | mean Δv | Pose (30 tracks) | rot err | SPEED |
+|---|---|---|---|---|---|
+| MPPI | 87.5% | 2.50 m/s | PnP (Gauss-Newton) | 1.27° | 0.028 |
+| Learned (1,282-param) | 97.5% | **2.05 m/s** | Centroid (naive) | 23.22° | 0.417 |
+| PD | 100% | 4.10 m/s | | | |
+
+Live leaderboard (runs the fast baselines in your browser, bit-identical): `bench/rpo-bench.html` → [physicalai-bmi.org/assets/sims/rpo-bench](https://physicalai-bmi.org/assets/sims/rpo-bench).

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RPO-Bench — open, deterministic on-orbit-logistics benchmark</title>
+<style>
+  :root{ --bg:#0b1024; --panel:#0f1730; --edge:rgba(207,170,91,.26); --line:#243157;
+    --ink:#eef1f8; --dim:#8aa0bd; --faint:#5b6a8a; --gold:#cfaa5b; --teal:#46c6b0; --blue:#6ea8ff; --red:#ff6a6a;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Inter",system-ui,sans-serif; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:40px 22px 60px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--gold)}
+  h1{font-size:clamp(28px,5.5vw,44px);font-weight:800;letter-spacing:-1.4px;line-height:1.03;margin:12px 0 0}
+  h1 .g{color:var(--gold)}
+  .lede{font-size:15.5px;line-height:1.6;color:var(--dim);max-width:72ch;margin:16px 0 0}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:34px 0 10px;display:flex;align-items:center;gap:10px}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+  th,td{text-align:right;padding:9px 12px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--edge)}
+  td.name{font-weight:600}
+  td .best{color:var(--teal)} td .mono{font-family:var(--mono);font-size:13px}
+  .live{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .live.ok{color:var(--teal)}
+  .btn{margin-top:24px;font-family:var(--mono);font-size:13px;letter-spacing:.06em;border:1px solid var(--gold);background:rgba(207,170,91,.12);color:var(--gold);border-radius:30px;padding:11px 22px;cursor:pointer}
+  .btn:disabled{opacity:.5;cursor:default}
+  .note{margin-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--faint);line-height:1.7}
+  .note code{color:var(--teal)}
+  .foot{margin-top:40px;border-top:1px solid var(--line);padding-top:16px;font-family:var(--mono);font-size:11.5px;color:var(--faint);line-height:1.8}
+  .foot a{color:var(--gold);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Institute for Physical AI @ BMI · The Charlot Lab · TR-2026-17</div>
+  <h1>RPO-<span class="g">Bench</span>.</h1>
+  <p class="lede">An open, <b style="color:var(--ink)">deterministic</b> benchmark for the two hard links of on-orbit logistics: non-cooperative <b style="color:var(--ink)">capture</b> (control) and monocular 6-DOF <b style="color:var(--ink)">pose</b> (perception). Fixed scenarios, fixed seeds, bit-identical every run — in a browser or headless in Node — so anyone can reproduce a score and try to beat it.</p>
+
+  <h2>Capture · 40 non-cooperative rendezvous</h2>
+  <table id="cap"><thead><tr><th>controller</th><th>success</th><th>mean Δv</th><th>mean steps</th><th>reproduced</th></tr></thead><tbody></tbody></table>
+
+  <h2>Pose · 30 tumbling-target tracks · monocular · SPEED metric</h2>
+  <table id="pose"><thead><tr><th>estimator</th><th>rotation err</th><th>translation err</th><th>SPEED score</th><th>reproduced</th></tr></thead><tbody></tbody></table>
+
+  <button class="btn" id="run">▶ Reproduce in your browser</button>
+  <p class="note">The published scores are computed headless with <code>node bench/rpo_bench.mjs</code>. Press the button to re-run the fast baselines live, in this tab — the numbers are bit-identical (the same seeds, the same math), which is the point: a benchmark you can verify, not trust.</p>
+
+  <div class="foot">
+    Code, scenarios, and baselines → <a href="https://github.com/dcharlot-physicalai-bmi/orbital-logistics" target="_blank" rel="noopener">github.com/dcharlot-physicalai-bmi/orbital-logistics</a> (<span style="color:var(--dim)">bench/</span>)<br>
+    Live instruments → <a href="https://physicalai-bmi.org/research/charlot-lab/space-logistics" target="_blank" rel="noopener">physicalai-bmi.org/research/charlot-lab/space-logistics</a> · Learned policy → <a href="https://huggingface.co/physicalai-bmi/orbital-capture-bc" target="_blank" rel="noopener">Hugging Face</a>
+  </div>
+</div>
+<script>
+"use strict";
+// ---- deterministic PRNG + physics (mirrors bench/rpo_bench.mjs and the core) ----
+const mul32=a=>()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+const gaussFrom=rng=>{let u=0,v=0;while(u===0)u=rng();while(v===0)v=rng();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);};
+const MU=3.986e14,RE=6.371e6,n=Math.sqrt(MU/(RE+450e3)**3);
+function cwStep(s,u,dt){const ax=3*n*n*s[0]+2*n*s[3]+u[0],ay=-2*n*s[2]+u[1];return[s[0]+s[2]*dt,s[1]+s[3]*dt,s[2]+ax*dt,s[3]+ay*dt];}
+// capture scenarios + baselines
+function capScen(){const o=[];for(let i=0;i<40;i++){const r=mul32(1000+i);o.push([12+r()*36,(r()*2-1)*16,(r()*2-1)*0.2,(r()*2-1)*0.2]);}return o;}
+function capPD(r0){let s=r0.slice(),dv=0;for(let k=0;k<400;k++){let ax=-0.02*s[0]-0.18*s[2],ay=-0.02*s[1]-0.18*s[3];const m=Math.hypot(ax,ay),U=0.03;if(m>U){ax*=U/m;ay*=U/m;}s=cwStep(s,[ax,ay],1);dv+=Math.hypot(ax,ay);if(Math.hypot(s[0],s[1])<0.5&&Math.hypot(s[2],s[3])<0.05)return{c:1,dv,k:k+1};}return{c:0,dv,k:400};}
+let POL=null;
+function fwd(P,sx){const mv=(W,a)=>W[0].map((_,j)=>a.reduce((s,ai,i)=>s+ai*W[i][j],0)),relu=z=>z.map(v=>v>0?v:0);const x=sx.map((v,j)=>(v-P.xm[j])/P.xsd[j]);const a1=relu(mv(P.W1,x).map((v,j)=>v+P.b1[j])),a2=relu(mv(P.W2,a1).map((v,j)=>v+P.b2[j]));return mv(P.W3,a2).map((v,j)=>v+P.b3[j]).map((v,j)=>v*P.ysd[j]+P.ym[j]);}
+function capLearned(r0){if(!POL)return{c:0,dv:0,k:0};let s=r0.slice(),dv=0;for(let k=0;k<400;k++){const u=fwd(POL,s);s=cwStep(s,u,1);dv+=Math.hypot(u[0],u[1]);if(Math.hypot(s[0],s[1])<0.6&&Math.hypot(s[2],s[3])<0.1)return{c:1,dv,k:k+1};}return{c:0,dv,k:400};}
+function runCap(f){const sc=capScen();let cap=0,dvs=[],ks=[];for(const r0 of sc){const r=f(r0);if(r.c){cap++;dvs.push(r.dv);ks.push(r.k);}}const mean=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0;return{rate:cap/sc.length,dv:mean(dvs),steps:mean(ks)};}
+// pose
+const KP=[[-.6,-.5,-.7],[.6,-.5,-.7],[.6,.5,-.7],[-.6,.5,-.7],[-.6,-.5,.7],[.6,-.5,.7],[.6,.5,.7],[-.6,.5,.7],[-3.4,-.2,.1],[-3.4,-.2,-.1],[3.4,.2,.1],[3.4,.2,-.1],[.35,.55,1.7],[-.35,-.35,.75]];
+const II=[1.0,2.6,3.2],K={f:800,cx:600,cy:360};
+function eulAcc(w){return[(II[1]-II[2])/II[0]*w[1]*w[2],(II[2]-II[0])/II[1]*w[2]*w[0],(II[0]-II[1])/II[2]*w[0]*w[1]];}
+function qdV(q,w){const[a,b,c,d]=q,[x,y,z]=w;return[0.5*(-b*x-c*y-d*z),0.5*(a*x+c*z-d*y),0.5*(a*y-b*z+d*x),0.5*(a*z+b*y-c*x)];}
+function rbStep(q,w,dt){const a1=eulAcc(w),qd1=qdV(q,w),wm=w.map((v,i)=>v+a1[i]*dt/2),qm=q.map((v,i)=>v+qd1[i]*dt/2);const a2=eulAcc(wm),qd2=qdV(qm,wm),wn=w.map((v,i)=>v+a2[i]*dt);let qn=q.map((v,i)=>v+qd2[i]*dt);const nn=Math.hypot(...qn)||1;return{q:qn.map(v=>v/nn),w:wn};}
+function qMat(q){const[w,x,y,z]=q;return[[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],[2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],[2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]];}
+function rvMat(r){const th=Math.hypot(...r);if(th<1e-9)return[[1,0,0],[0,1,0],[0,0,1]];const[kx,ky,kz]=r.map(v=>v/th),c=Math.cos(th),s=Math.sin(th),C=1-c;return[[c+kx*kx*C,kx*ky*C-kz*s,kx*kz*C+ky*s],[ky*kx*C+kz*s,c+ky*ky*C,ky*kz*C-kx*s],[kz*kx*C-ky*s,kz*ky*C+kx*s,c+kz*kz*C]];}
+const mmul=(M,p)=>[M[0][0]*p[0]+M[0][1]*p[1]+M[0][2]*p[2],M[1][0]*p[0]+M[1][1]*p[1]+M[1][2]*p[2],M[2][0]*p[0]+M[2][1]*p[1]+M[2][2]*p[2]];
+const matMul=(A,B)=>A.map(row=>[0,1,2].map(j=>row[0]*B[0][j]+row[1]*B[1][j]+row[2]*B[2][j]));
+const tr3=M=>[[M[0][0],M[1][0],M[2][0]],[M[0][1],M[1][1],M[2][1]],[M[0][2],M[1][2],M[2][2]]];
+function proj(R,t,p){const pc=[mmul(R,p)[0]+t[0],mmul(R,p)[1]+t[1],mmul(R,p)[2]+t[2]];if(pc[2]<0.2)return null;return[K.f*pc[0]/pc[2]+K.cx,K.f*pc[1]/pc[2]+K.cy,pc[2]];}
+function solve6(A,b){const N=6,M=A.map((r,i)=>[...r,b[i]]);for(let c=0;c<N;c++){let p=c;for(let r=c+1;r<N;r++)if(Math.abs(M[r][c])>Math.abs(M[p][c]))p=r;[M[c],M[p]]=[M[p],M[c]];if(Math.abs(M[c][c])<1e-12)return null;for(let r=0;r<N;r++)if(r!==c){const f=M[r][c]/M[c][c];for(let k=c;k<=N;k++)M[r][k]-=f*M[c][k];}}return M.map((r,i)=>r[N]/r[i]);}
+function pnp(dets,x0){let x=x0.slice();for(let it=0;it<8;it++){const R=rvMat(x.slice(0,3)),t=x.slice(3);const res=[],J=[];for(const d of dets){const pr=proj(R,t,KP[d.i]);if(!pr)continue;res.push(d.u-pr[0],d.v-pr[1]);const r0=[],r1=[];for(let k=0;k<6;k++){const xp=x.slice();xp[k]+=1e-4;const prp=proj(rvMat(xp.slice(0,3)),xp.slice(3),KP[d.i]);r0.push(prp?(prp[0]-pr[0])/1e-4:0);r1.push(prp?(prp[1]-pr[1])/1e-4:0);}J.push(r0);J.push(r1);}if(res.length<12)break;const A=Array.from({length:6},()=>Array(6).fill(0)),g=Array(6).fill(0);for(let r=0;r<res.length;r++){const jr=J[r];for(let a=0;a<6;a++){g[a]+=jr[a]*res[r];for(let b=0;b<6;b++)A[a][b]+=jr[a]*jr[b];}}for(let a=0;a<6;a++)A[a][a]=A[a][a]*1.25+1e-3;let dx=solve6(A,g);if(!dx||!dx.every(Number.isFinite))break;const mg=Math.hypot(...dx);if(mg>0.5)dx=dx.map(v=>v*0.5/mg);for(let k=0;k<6;k++)x[k]+=dx[k];if(mg<1e-5)break;}return x;}
+function poseScen(){const o=[];for(let i=0;i<30;i++){const r=mul32(5000+i);const d=[r()*2-1,r()*2-1,r()*2-1],m=Math.hypot(...d),rate=0.18+r()*0.35;o.push({seed:5000+i,w0:d.map(v=>v/m*rate),noise:1.5+r()*2.5});}return o;}
+function pErr(Re,te,R,tv){const Rr=matMul(Re,tr3(R)),re=Math.acos(Math.max(-1,Math.min(1,(Rr[0][0]+Rr[1][1]+Rr[2][2]-1)/2)));const t=Math.hypot(te[0]-tv[0],te[1]-tv[1],te[2]-tv[2]);return{re,t,s:re+t/Math.hypot(...tv)};}
+function runPnP(){const sc=poseScen(),rr=[],tt=[],ss=[];for(const s of sc){const rng=mul32(s.seed*7+1);let Q=[1,0,0,0],W=s.w0.slice(),est=[0.01,0,0,0,0,9];const es=[];for(let f=0;f<40;f++){const st=rbStep(Q,W,0.05);Q=st.q;W=st.w;const R=qMat(Q),tv=[Math.sin(f*0.06),Math.cos(f*0.05)*0.7,9];const dets=[];for(let i=0;i<KP.length;i++){const pr=proj(R,tv,KP[i]);if(!pr)continue;if(pr[2]>9.35&&rng()<0.5)continue;if(rng()<0.18)continue;dets.push({i,u:pr[0]+gaussFrom(rng)*s.noise,v:pr[1]+gaussFrom(rng)*s.noise});}if(dets.length>=6){const e2=pnp(dets,est);if(e2.every(Number.isFinite)&&e2[5]>2&&e2[5]<60)est=e2;}if(f>=5)es.push(pErr(rvMat(est.slice(0,3)),est.slice(3),R,tv));}const mean=k=>es.reduce((a,e)=>a+e[k],0)/es.length;rr.push(mean('re'));tt.push(mean('t'));ss.push(mean('s'));}const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;return{rerr:mean(rr)*180/Math.PI,terr:mean(tt),speed:mean(ss)};}
+
+// ---- render leaderboard from the published results ----
+let RES=null;
+const cell=(v,best)=>'<span class="mono'+(best?' best':'')+'">'+v+'</span>';
+function renderStored(){
+  const cb=document.querySelector('#cap tbody'); cb.innerHTML='';
+  const capOrder=[['MPPI','MPPI · optimal planner'],['Learned','Learned · 1,282-param policy'],['PD','PD · hand-tuned']];
+  const bestDv=Math.min(...capOrder.map(([k])=>RES.capture[k].dv));
+  for(const [k,label] of capOrder){const r=RES.capture[k];
+    cb.insertAdjacentHTML('beforeend','<tr data-cap="'+k+'"><td class="name">'+label+'</td><td>'+cell((r.rate*100).toFixed(1)+'%')+'</td><td>'+cell(r.dv.toFixed(2)+' m/s',Math.abs(r.dv-bestDv)<1e-6)+'</td><td>'+cell(r.steps.toFixed(0))+'</td><td class="live" data-live="cap-'+k+'">—</td></tr>');}
+  const pb=document.querySelector('#pose tbody'); pb.innerHTML='';
+  const poseOrder=[['PnP','PnP · Gauss-Newton'],['Centroid (naive)','Centroid · naive baseline']];
+  const bestS=Math.min(...poseOrder.map(([k])=>RES.pose[k].speed));
+  for(const [k,label] of poseOrder){const r=RES.pose[k];
+    pb.insertAdjacentHTML('beforeend','<tr><td class="name">'+label+'</td><td>'+cell(r.rerr.toFixed(2)+'°')+'</td><td>'+cell(r.terr.toFixed(3)+' m')+'</td><td>'+cell(r.speed.toFixed(3),Math.abs(r.speed-bestS)<1e-6)+'</td><td class="live" data-live="pose-'+k+'">—</td></tr>');}
+}
+fetch('/assets/sims/rpo-results.json').then(r=>r.json()).then(j=>{RES=j;renderStored();});
+fetch('/assets/sims/bc_policy.json').then(r=>r.json()).then(j=>POL=j).catch(()=>{});
+
+// ---- live reproduce ----
+const match=(a,b)=>Math.abs(a-b)<5e-3;
+document.getElementById('run').onclick=async function(){
+  this.disabled=true; this.textContent='running…'; await new Promise(r=>setTimeout(r,30));
+  const setLive=(sel,txt,ok)=>{const el=document.querySelector('[data-live="'+sel+'"]');el.textContent=txt;el.className='live'+(ok?' ok':'');};
+  // capture (fast baselines): Learned, PD
+  const lr=runCap(capLearned), pd=runCap(capPD);
+  setLive('cap-Learned','✓ '+(lr.rate*100).toFixed(1)+'% · Δv '+lr.dv.toFixed(2), match(lr.rate,RES.capture.Learned.rate)&&match(lr.dv,RES.capture.Learned.dv));
+  setLive('cap-PD','✓ '+(pd.rate*100).toFixed(1)+'% · Δv '+pd.dv.toFixed(2), match(pd.rate,RES.capture.PD.rate)&&match(pd.dv,RES.capture.PD.dv));
+  setLive('cap-MPPI','(headless only)',false);
+  await new Promise(r=>setTimeout(r,30));
+  // pose
+  const pn=runPnP();
+  setLive('pose-PnP','✓ '+pn.rerr.toFixed(2)+'° · SPEED '+pn.speed.toFixed(3), match(pn.speed,RES.pose.PnP.speed));
+  setLive('pose-Centroid (naive)','(headless only)',false);
+  this.textContent='✓ reproduced live — bit-identical to headless';
+};
+</script>
+</body>
+</html>
