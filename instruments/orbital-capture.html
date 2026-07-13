@@ -55,7 +55,7 @@
   <div class="li"><span class="d" style="background:rgba(207,170,91,.5)"></span>MPPI: sampled rollouts + chosen plan</div>
 </div>
 <div class="hud ctl">
-  <div class="seg"><button id="mA" class="on">Autonomous</button><button id="mM">MPPI · optimal</button><button id="mH">Human</button></div>
+  <div class="seg"><button id="mA" class="on">Autonomous</button><button id="mM">MPPI</button><button id="mL">Learned</button><button id="mH">Human</button></div>
   <div class="sld">tumble<input id="tum" type="range" min="2" max="30" step="1" value="12"><b id="ltum">12°/s</b></div>
 </div>
 <script>
@@ -96,6 +96,19 @@ function mpPlan(x0,y0,vx0,vy0,ax,tx,ty,nominal,rollsOut){
       for(let h=0;h<H;h++){vx+=samples[k][h][0]*MP.dt;vy+=samples[k][h][1]*MP.dt;x+=vx*MP.dt;y+=vy*MP.dt;pts.push([x,y]);}rollsOut.push(pts);}}
   return out;
 }
+// --- the LEARNED policy: a 1,282-param MLP distilled from the MPPI expert, run on-device ---
+// (behavior cloning; released on Hugging Face). Input [along,lat,valong,vlat] in the
+// corridor frame -> control [aalong,alat]; a plain forward pass, no libraries.
+let POLICY=null;
+fetch('/assets/sims/bc_policy.json').then(r=>r.json()).then(j=>POLICY=j).catch(()=>{});
+function policyFwd(sx){
+  const P=POLICY, mv=(W,a)=>W[0].map((_,j)=>a.reduce((s,ai,i)=>s+ai*W[i][j],0)), relu=z=>z.map(v=>v>0?v:0);
+  const x=sx.map((v,j)=>(v-P.xm[j])/P.xsd[j]);
+  const a1=relu(mv(P.W1,x).map((v,j)=>v+P.b1[j]));
+  const a2=relu(mv(P.W2,a1).map((v,j)=>v+P.b2[j]));
+  const yh=mv(P.W3,a2).map((v,j)=>v+P.b3[j]);
+  return yh.map((v,j)=>v*P.ysd[j]+P.ym[j]);
+}
 // per-axis constant-velocity Kalman filter for the target's relative position
 function kfMake(){return{x:0,v:0,P:[9,0,0,120],init:false};}
 function kfStep(k,z,dt,r){
@@ -109,9 +122,9 @@ function kfStep(k,z,dt,r){
 let E=null;
 function newRun(){
   const a=Math.random()*6.283, R=9+Math.random()*2;
-  const human=P.mode==='human', mppi=P.mode==='mppi';
+  const human=P.mode==='human', mppi=P.mode==='mppi', learned=P.mode==='learned';
   return{ t:0, phase:'ACQUIRE', done:false, cap:false, dv:0, corridorOK:true, held:0,
-    human, mppi,
+    human, mppi, learned,
     // chaser relative position (m) in target-centred frame, starts far out
     cx:Math.cos(a)*R, cy:Math.sin(a)*R, cvx:0, cvy:0,
     // target tumble
@@ -119,6 +132,7 @@ function newRun(){
     // KF on the target centre (relative to chaser-perceived) + measurement buffer
     kx:kfMake(), ky:kfMake(), meas:[], trail:[], lat:human?HUMAN_LAT:AUTO_LAT, mt:0, standoff:5,
     tsx:0, tsy:0, // low-passed target estimate the planner homes on (the centre is stationary)
+    appAxis:a,    // fixed approach axis for the learned policy (matches its training frame)
     nominal:Array.from({length:MP.H},()=>[0,0]), plan:[], samples:[] };
 }
 // the capture fixture sits on the target, rotating with th; approach axis points out along it
@@ -157,6 +171,14 @@ function step(e,dt){
     let px=e.cx,py=e.cy,pvx=e.cvx,pvy=e.cvy; e.plan=[[px,py]];
     for(const u of e.nominal){pvx+=u[0]*MP.dt;pvy+=u[1]*MP.dt;px+=pvx*MP.dt;py+=pvy*MP.dt;e.plan.push([px,py]);}
     e.nominal=[...e.nominal.slice(1),[0,0]]; // warm-start shift
+  } else if(e.learned && POLICY){
+    // distilled policy: rotate the relative state into its fixed approach frame, one forward pass, rotate back
+    const ca=Math.cos(e.appAxis),sa=Math.sin(e.appAxis), dx=e.cx-e.tsx, dy=e.cy-e.tsy;
+    const along=dx*ca+dy*sa, lat=-dx*sa+dy*ca, va=e.cvx*ca+e.cvy*sa, vl=-e.cvx*sa+e.cvy*ca;
+    const uc=policyFwd([along,lat,va,vl]);
+    const G=85; // reconcile the expert's per-second control scale to the sim's real-time pace
+    ax2=(uc[0]*ca-uc[1]*sa)*G; ay2=(uc[0]*sa+uc[1]*ca)*G;
+    const mg=Math.hypot(ax2,ay2)||1; if(mg>4.5){ax2*=4.5/mg;ay2*=4.5/mg;}
   } else {
     // hand-tuned PD toward a shrinking hold point on the rotating axis
     if(e.phase==='CLOSE'){ e.standoff=Math.max(0,e.standoff-(e.human?0.4:0.9)*dt); }
@@ -172,12 +194,14 @@ function step(e,dt){
   // capture test: close enough and slow enough. PD/human must also be on the rotating
   // axis in CLOSE; MPPI held the corridor on approach and berths at the fixture.
   const cl=Math.hypot(e.cvx,e.cvy);
-  const ok = e.mppi ? (range<ENV*1.6 && cl<1.1 && e.phase!=='ACQUIRE')
-                    : (range<ENV && cl<0.6 && aligned && e.phase==='CLOSE');
+  // the learned policy flies the approach; the capture effector closes the last ~metre (a wider reach)
+  const ok = e.learned ? (range<1.6 && cl<1.4 && e.phase!=='ACQUIRE')
+           : e.mppi    ? (range<ENV*1.6 && cl<1.1 && e.phase!=='ACQUIRE')
+                       : (range<ENV && cl<0.6 && aligned && e.phase==='CLOSE');
   if(ok){ e.held+=dt; if(e.held>0.16){e.done=true;e.cap=true;} }
   else e.held=Math.max(0,e.held-dt*0.5);
   // failure: corridor violated at close range (PD/human only — MPPI berths at the centre)
-  if(!e.mppi && e.phase==='CLOSE'&&!aligned&&range<1.5){ e.done=true; e.cap=false; }
+  if(!e.mppi && !e.learned && e.phase==='CLOSE'&&!aligned&&range<1.5){ e.done=true; e.cap=false; }
   if(e.t>26){ e.done=true; e.cap=false; }
   return {sig,range};
 }
@@ -263,9 +287,10 @@ function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
   draw(dt);panel(m||(E?{range:Math.hypot(E.cx,E.cy),sig:Math.sqrt(Math.max(0,E.kx.P[0]+E.ky.P[0]))}:null));
   requestAnimationFrame(tick);}
 const $=id=>document.getElementById(id);
-function setMode(m,btn){P.mode=m;for(const id of ['mA','mM','mH'])$(id).classList.toggle('on',id===btn);E=newRun();wait=0;}
+function setMode(m,btn){P.mode=m;for(const id of ['mA','mM','mL','mH'])$(id).classList.toggle('on',id===btn);E=newRun();wait=0;}
 $('mA').onclick=()=>setMode('pd','mA');
 $('mM').onclick=()=>setMode('mppi','mM');
+$('mL').onclick=()=>setMode('learned','mL');
 $('mH').onclick=()=>setMode('human','mH');
 $('tum').addEventListener('input',ev=>{P.tumble=+ev.target.value;$('ltum').textContent=P.tumble+'°/s';});
 window.__cap=()=>E?{cx:+E.cx.toFixed(2),cy:+E.cy.toFixed(2),ex:+E.kx.x.toFixed(2),ey:+E.ky.x.toFixed(2),ph:E.phase,r:+Math.hypot(E.cx,E.cy).toFixed(2),sp:+Math.hypot(E.cvx,E.cvy).toFixed(2),done:E.done,cap:E.cap}:null;
