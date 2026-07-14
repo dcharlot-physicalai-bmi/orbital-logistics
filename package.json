@@ -6,8 +6,13 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test core/physics.test.mjs",
-    "sweep": "node core/sweep.mjs"
+    "sweep": "node core/sweep.mjs",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "author": "Institute for Physical AI @ BMI",
-  "repository": "github:dcharlot-physicalai-bmi/orbital-logistics"
+  "repository": "github:dcharlot-physicalai-bmi/orbital-logistics",
+  "devDependencies": {
+    "wrangler": "^4.110.0"
+  }
 }

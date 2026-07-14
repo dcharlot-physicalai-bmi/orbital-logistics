@@ -7,6 +7,7 @@ import {
   meanMotion, cwPropagate, cwTargetIntercept, mppiCapture,
   rigidBodyStep, rotEnergy, angMomentum, qRotate,
   zemzev, land,
+  formationRun, formationSlots, assignSlots,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -154,4 +155,27 @@ test('CW: two-impulse targeting reaches the target', () => {
   // dv2 nulls the arrival velocity for a soft berth
   near(arr.v[0] + plan.dv2[0], 0, 1e-6);
   near(arr.v[1] + plan.dv2[1], 0, 1e-6);
+});
+
+test('formation: converges tight and holds collision-free through reconfiguration', () => {
+  const r = formationRun(12, ['ring', 'grid', 'wedge', 'line'], 7);
+  assert.ok(r.finalRms < 2, `formation should settle tight, got ${r.finalRms} m`);
+  assert.ok(!r.collided, `no collision: min sep ${r.minSep} m must exceed 2*safeR (3 m)`);
+  assert.ok(r.minSep > 3, `min separation ${r.minSep} m must clear the hard-body radius`);
+});
+
+test('formation: same seed is deterministic (reproducible)', () => {
+  const a = formationRun(10, ['ring', 'wedge'], 3);
+  const b = formationRun(10, ['ring', 'wedge'], 3);
+  assert.equal(a.minSep, b.minSep);
+  assert.equal(a.dvPerAgent, b.dvPerAgent);
+  assert.equal(a.finalRms, b.finalRms);
+});
+
+test('formation: greedy assignment is a valid permutation (no shared slots)', () => {
+  const slots = formationSlots('ring', 8, 100);
+  const sats = Array.from({ length: 8 }, (_, i) => ({ x: Math.cos(i) * 40, y: Math.sin(i * 2) * 40 }));
+  const a = assignSlots(sats, slots, 0.3);
+  assert.equal(new Set(a).size, 8, 'every agent claims a distinct slot');
+  assert.ok(a.every(k => k >= 0 && k < 8), 'slot indices in range');
 });

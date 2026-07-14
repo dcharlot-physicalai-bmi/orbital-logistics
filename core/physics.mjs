@@ -332,3 +332,118 @@ export function mppiCapture(s0, n, opts={}, seed=1){
   }
   return { captured, dvTotal:dv, steps:traj.length-1, trajectory:traj, finalRange:Math.hypot(s[0],s[1]) };
 }
+
+// --- Multi-agent formation flight (decentralized coordination) ----------------
+// N agents hold a rotating formation. Each runs a LOCAL controller only: a PD
+// toward its assigned slot, with the slot's own velocity fed forward so the
+// rotation is tracked without lag, plus a pairwise collision-avoidance push from
+// neighbours inside a sensing radius. There is no central controller; the one
+// global operation is a one-time greedy slot assignment on a pattern change (each
+// agent claims the nearest free slot). Double-integrator dynamics — illustrative —
+// but the assignment, feedforward, and avoidance are exactly what the instrument runs.
+export const FORMATION_DEFAULTS = {
+  R: 100,        // formation scale (m)
+  rot: 0.07,     // formation rotation rate (rad/s)
+  kp: 2.8, kd: 2.8,
+  senseR: 15,    // neighbour sensing / avoidance radius (m); below the tightest slot
+                 // spacing so the avoidance fires on genuine near-misses, not at rest
+  repel: 650,    // avoidance gain
+  umax: 80,      // thrust-accel limit (illustrative)
+  safeR: 1.5,    // hard-body radius (m): a min separation below 2*safeR is a collision
+  dt: 0.05, hold: 8,
+};
+
+// Slot positions for a pattern, in the (un-rotated) formation frame, centred.
+export function formationSlots(pattern, n, R = 100) {
+  const out = [];
+  if (pattern === 'ring') { for (let i=0;i<n;i++){const a=i/n*2*Math.PI; out.push([Math.cos(a)*R, Math.sin(a)*R]);} }
+  else if (pattern === 'line') { for (let i=0;i<n;i++) out.push([(i-(n-1)/2)*(2*R/(n-1||1)), 0]); }
+  else if (pattern === 'grid') { const c=Math.ceil(Math.sqrt(n)), rows=Math.ceil(n/c);
+    for (let i=0;i<n;i++){const gx=i%c, gy=(i/c)|0; out.push([(gx-(c-1)/2)*(1.6*R/(c-1||1)), (gy-(rows-1)/2)*(1.6*R/(rows-1||1))]);} }
+  else { for (let i=0;i<n;i++){const s=i-(n-1)/2; out.push([-Math.abs(s)*(1.7*R/n), s*(1.5*R/n)]);} } // wedge
+  return out;
+}
+
+// Slot assignment: greedy nearest-free to seed, then 2-opt untangling. The minimum
+// sum-of-squared-distance matching is provably non-crossing, and 2-opt swaps (undo any
+// pair whose paths cross, i.e. whose swap lowers the squared-distance sum) converge to
+// it. Removing crossings removes the dominant collision risk — two agents transferring
+// across each other — for whatever controller then flies the transfer.
+export function assignSlots(sats, slots, rot) {
+  const c=Math.cos(rot), si=Math.sin(rot);
+  const world = k => [slots[k][0]*c - slots[k][1]*si, slots[k][0]*si + slots[k][1]*c];
+  const W = slots.map((_, k) => world(k));
+  const taken = new Array(slots.length).fill(false), out = new Array(sats.length);
+  for (let ai=0; ai<sats.length; ai++){ let best=-1, bd=Infinity;
+    for (let k=0;k<slots.length;k++){ if(taken[k]) continue;
+      const d=(W[k][0]-sats[ai].x)**2 + (W[k][1]-sats[ai].y)**2; if(d<bd){bd=d;best=k;} }
+    out[ai]=best; taken[best]=true; }
+  const sq = (a, w) => (w[0]-a.x)**2 + (w[1]-a.y)**2;
+  for (let pass=0; pass<8; pass++){ let swapped=false;
+    for (let i=0;i<sats.length;i++) for (let j=i+1;j<sats.length;j++){
+      const cur = sq(sats[i], W[out[i]]) + sq(sats[j], W[out[j]]);
+      const alt = sq(sats[i], W[out[j]]) + sq(sats[j], W[out[i]]);
+      if (alt < cur - 1e-9){ const t=out[i]; out[i]=out[j]; out[j]=t; swapped=true; } }
+    if (!swapped) break; }
+  return out;
+}
+
+// One simultaneous control step for the whole formation (each agent's law is local).
+// Mutates sats (writes .ax/.ay then integrates). Returns { rms, minSep }.
+export function formationStep(sats, slots, assign, rot, dt, opts={}) {
+  const o={...FORMATION_DEFAULTS, ...opts};
+  const c=Math.cos(rot), si=Math.sin(rot);
+  let minSep=Infinity, errSum=0;
+  for (let i=0;i<sats.length;i++){ const s=sats[i], sl=slots[assign[i]];
+    const tx=sl[0]*c - sl[1]*si, ty=sl[0]*si + sl[1]*c;
+    const svx=-o.rot*ty, svy=o.rot*tx;                 // slot velocity (feedforward)
+    let ax=o.kp*(tx-s.x) - o.kd*(s.vx-svx), ay=o.kp*(ty-s.y) - o.kd*(s.vy-svy);
+    for (let j=0;j<sats.length;j++){ if(j===i) continue;
+      const dx=s.x-sats[j].x, dy=s.y-sats[j].y, d=Math.hypot(dx,dy);
+      if(j>i && d<minSep) minSep=d;
+      if(d<o.senseR){ const w=(o.senseR-d)/o.senseR; ax+=dx/(d||1e-9)*w*w*o.repel; ay+=dy/(d||1e-9)*w*w*o.repel; } }
+    const am=Math.hypot(ax,ay); if(am>o.umax){ax*=o.umax/am;ay*=o.umax/am;}
+    s.ax=ax; s.ay=ay; errSum+=Math.hypot(tx-s.x, ty-s.y);
+  }
+  for (const s of sats){ s.vx+=s.ax*dt; s.vy+=s.ay*dt; s.x+=s.vx*dt; s.y+=s.vy*dt; }
+  return { rms: errSum/sats.length, minSep };
+}
+
+// Scatter n agents in the formation disk with a minimum inter-agent spacing
+// (rejection sampling): no real deployment starts a constellation with satellites
+// on top of each other, so the collision metric must measure control, not spawn luck.
+export function scatterAgents(n, R, rng, minSpacing = 18) {
+  const sats = [];
+  for (let i = 0; i < n; i++) {
+    let placed = null;
+    for (let tries = 0; tries < 200; tries++) {
+      const grow = 1 + tries / 60;                       // ease the constraint if crowded
+      const a = rng() * 2 * Math.PI, rr = R * (0.3 + rng() * 0.6) * grow;
+      const p = { x: Math.cos(a) * rr, y: Math.sin(a) * rr, vx: 0, vy: 0 };
+      if (sats.every(q => Math.hypot(p.x - q.x, p.y - q.y) >= minSpacing)) { placed = p; break; }
+      placed = p;                                         // last resort: keep the final try
+    }
+    sats.push(placed);
+  }
+  return sats;
+}
+
+// Deterministic scenario: scatter n agents, then hold/reconfigure through a list of
+// patterns. Reports the tightest RMS reached, the global minimum separation (collision
+// test), mean Δv per agent, and a per-pattern breakdown. Same seed → identical result.
+export function formationRun(n, patterns, seed = 1, opts = {}) {
+  const o={...FORMATION_DEFAULTS, ...opts}, rng=mulberry32(seed), dt=o.dt;
+  const sats = scatterAgents(n, o.R, rng, o.minSpacing || 18);
+  let rot=0, minSepAll=Infinity, dvSum=0; const holdSteps=Math.round(o.hold/dt), perPattern=[];
+  for (const p of patterns){ const slots=formationSlots(p, n, o.R), assign=assignSlots(sats, slots, rot);
+    let rms=Infinity, minSep=Infinity, settleT=null;
+    for (let k=0;k<holdSteps;k++){ rot+=o.rot*dt;
+      const m=formationStep(sats, slots, assign, rot, dt, o);
+      for(const s of sats) dvSum+=Math.hypot(s.ax,s.ay)*dt;
+      if(m.minSep<minSep)minSep=m.minSep; if(m.minSep<minSepAll)minSepAll=m.minSep;
+      rms=m.rms; if(settleT===null && rms<o.R*0.02) settleT=+(k*dt).toFixed(2); }
+    perPattern.push({ pattern:p, finalRms:+rms.toFixed(3), minSep:+minSep.toFixed(2), settleT });
+  }
+  return { n, seed, minSep:+minSepAll.toFixed(2), collided: minSepAll < 2*o.safeR,
+    dvPerAgent:+(dvSum/n).toFixed(2), finalRms:perPattern[perPattern.length-1].finalRms, perPattern };
+}

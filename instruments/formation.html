@@ -83,15 +83,25 @@ function newRun(){
   const sats=[]; for(let i=0;i<n;i++){const a=Math.random()*6.283, rr=R*0.4+Math.random()*R*0.5;
     sats.push({x:Math.cos(a)*rr,y:Math.sin(a)*rr,vx:0,vy:0,slot:i,trail:[]});}
   return{ n, sats, sl, rot:0, t:0, minSep:999, ferr:0, dv:0, patName:P.pat };}
-// greedy nearest-slot assignment (each agent claims the closest free slot)
+// slot assignment: greedy nearest-free, then 2-opt untangling. The minimum
+// sum-of-squared-distance matching is provably non-crossing, and undoing any pair
+// whose swap lowers that sum converges to it — removing the crossing transfers that
+// are the dominant collision risk when the whole formation reconfigures at once.
 function assign(e){
-  const worldSlot=i=>{const s=e.sl[i],c=Math.cos(e.rot),si=Math.sin(e.rot);return [s[0]*c-s[1]*si, s[0]*si+s[1]*c];};
-  const free=e.sl.map((_,i)=>i), order=e.sats.map((_,i)=>i);
-  const taken=new Array(e.sl.length).fill(false);
-  // sort agents by distance to their nearest slot, assign greedily (reduces crossings)
-  for(const ai of order){let best=-1,bd=1e9;const s=e.sats[ai];
-    for(let k=0;k<e.sl.length;k++){if(taken[k])continue;const w=worldSlot(k);const d=Math.hypot(w[0]-s.x,w[1]-s.y);if(d<bd){bd=d;best=k;}}
-    e.sats[ai].slot=best; taken[best]=true;}
+  const c=Math.cos(e.rot),si=Math.sin(e.rot);
+  const W=e.sl.map(s=>[s[0]*c-s[1]*si, s[0]*si+s[1]*c]);
+  const taken=new Array(e.sl.length).fill(false), slot=new Array(e.sats.length);
+  for(let ai=0;ai<e.sats.length;ai++){let best=-1,bd=1e18;const s=e.sats[ai];
+    for(let k=0;k<W.length;k++){if(taken[k])continue;const d=(W[k][0]-s.x)**2+(W[k][1]-s.y)**2;if(d<bd){bd=d;best=k;}}
+    slot[ai]=best; taken[best]=true;}
+  const sq=(s,w)=>(w[0]-s.x)**2+(w[1]-s.y)**2;
+  for(let pass=0;pass<8;pass++){let swapped=false;
+    for(let i=0;i<e.sats.length;i++)for(let j=i+1;j<e.sats.length;j++){
+      const cur=sq(e.sats[i],W[slot[i]])+sq(e.sats[j],W[slot[j]]);
+      const alt=sq(e.sats[i],W[slot[j]])+sq(e.sats[j],W[slot[i]]);
+      if(alt<cur-1e-6){const t=slot[i];slot[i]=slot[j];slot[j]=t;swapped=true;}}
+    if(!swapped)break;}
+  for(let i=0;i<e.sats.length;i++)e.sats[i].slot=slot[i];
 }
 function reconfigure(pat){E.sl=slots(pat,E.n);E.patName=pat;assign(E);}
 const ROT=0.07;                            // gentle orbital rotation rate

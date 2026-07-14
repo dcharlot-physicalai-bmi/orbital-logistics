@@ -1,0 +1,31 @@
+{
+  "benchmark": "Formation-Bench",
+  "n": 12,
+  "patterns": [
+    "ring",
+    "grid",
+    "wedge",
+    "line"
+  ],
+  "seeds": 30,
+  "collisionRadius": 3,
+  "convergedRms": 3,
+  "controllers": {
+    "distributed-analytic": {
+      "success": 1,
+      "meanRms": 0.08800000000000004,
+      "meanSep": 12.110000000000008,
+      "worstSep": 12.11,
+      "meanDv": 302.9973333333333
+    },
+    "learned-1474p": {
+      "success": 1,
+      "meanRms": 0.14747092896392924,
+      "meanSep": 13.053421593236742,
+      "worstSep": 13.0517856105893,
+      "meanDv": 302.0045696104729,
+      "params": 1474,
+      "note": "compact per-agent net + reflexive safety filter; clones coordination, carries a residual min-separation gap vs the certified analytic controller"
+    }
+  }
+}

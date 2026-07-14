@@ -42,13 +42,15 @@ The load-bearing equations, extracted from the instruments so they run headless 
 core/physics.mjs        error function, tether taper, vis-viva, escape,
                         EM-launch track/power, Δv composer, capture Kalman filter,
                         Clohessy-Wiltshire relative motion + two-impulse RPO targeting,
-                        MPPI receding-horizon optimal capture controller
+                        MPPI receding-horizon optimal capture controller,
+                        ZEM/ZEV powered-descent landing, torque-free 6-DOF rigid body,
+                        decentralized formation flight (slot assignment + local keeping)
 core/sweep.mjs          CLI: tether | sled | skyhook | compose | rpo | mppi
 core/physics.test.mjs   sanity checks against independently re-derived values
 ```
 
 ```bash
-npm test                    # 14 checks
+npm test                    # 23 checks
 npm run sweep -- tether     # tether mass ratio vs tip speed, per material
 npm run sweep -- sled       # track length / peak power vs exit speed
 npm run sweep -- skyhook    # catch/release vs altitude, against escape at the tip
@@ -95,3 +97,28 @@ Baselines (reproducible):
 | PD | 100% | 4.10 m/s | | | |
 
 Live leaderboard (runs the fast baselines in your browser, bit-identical): `bench/rpo-bench.html` → [physicalai-bmi.org/assets/sims/rpo-bench](https://physicalai-bmi.org/assets/sims/rpo-bench).
+
+## Formation-Bench
+
+The multi-agent counterpart: an open, deterministic benchmark for **decentralized formation flight**. Twelve agents hold a rotating formation and reconfigure it (ring→grid→wedge→line) with local control only, scored on whether the shape holds (RMS slot error), whether it stays collision-free (global minimum separation vs the hard-body radius), and the Δv it costs — 30 fixed seeds, bit-identical every run.
+
+```bash
+node bench/formation_bench.mjs     # prints the table, writes bench/formation-results.json
+```
+
+Two controllers (reproducible):
+
+| Controller | success | mean RMS | worst min-sep | mean Δv/agent |
+|---|---|---|---|---|
+| Distributed (analytic) | 100% | 0.09 m | 12.11 m | 303 m/s |
+| Learned (1,474-param, on-device) | 100% | 0.15 m | 13.05 m | 302 m/s |
+
+Two findings the benchmark makes concrete:
+
+- **The assignment is the safety-critical step, not the controller.** The dominant collision risk is a *crossing transfer* — two agents swapping across the formation. A minimum sum-of-squared-distance matching is provably non-crossing, and a 2-opt untangling pass (`assignSlots`) converges to it; with crossings removed, every controller reconfigures collision-free with a 12–13 m margin. Naive greedy assignment, by contrast, leaves near-misses under 1.5 m.
+- **A compact learned policy reproduces the coordination.** A 1,474-parameter per-agent net — behavior-cloned from the analytic controller, seeing only its own slot error and its three nearest neighbours (`policy/`) — holds the formation and reconfigures on-device, matching the analytic's keeping and Δv, under a light reflexive safety filter. Train it end to end:
+
+```bash
+node policy/gen_formation_data.mjs   # roll out the analytic controller → demonstrations
+node policy/train_formation.mjs      # clone into formation_policy.json + closed-loop validate
+```
