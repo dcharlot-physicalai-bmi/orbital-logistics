@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>ISRU — making propellant from the ground</title>
+<style>
+  :root{ --bg:#0b1024; --panel:rgba(12,18,38,.82); --edge:rgba(207,170,91,.26); --line:#243157;
+    --ink:#eef1f8; --dim:#8aa0bd; --faint:#5b6a8a; --gold:#cfaa5b; --teal:#46c6b0; --blue:#6ea8ff; --red:#ff6a6a; --reg:#9a8467;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Inter",system-ui,sans-serif; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:absolute;z-index:5}
+  .top{top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:15px 18px;gap:16px;pointer-events:none}
+  .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;margin:0 0 3px}
+  h1{margin:0;font-size:17px;font-weight:600}
+  .top p{margin:4px 0 0;font-size:12.5px;color:var(--dim);max-width:50ch;line-height:1.45}
+  .stats{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+  .stat{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:8px 12px;min-width:98px;backdrop-filter:blur(9px)}
+  .stat .k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .stat .v{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:2px}
+  .ctl{bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);flex-wrap:wrap;justify-content:center;max-width:94%}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{font-family:var(--mono);font-size:11px;padding:6px 11px;border:none;background:transparent;color:var(--dim);cursor:pointer}
+  .seg button.on{background:var(--gold);color:#0b1024;font-weight:600}
+  .sld{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .sld input{accent-color:var(--gold);width:88px;height:15px}
+  .sld b{color:var(--gold);min-width:52px;text-align:right}
+  .legend{left:18px;bottom:74px;background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:10px 12px;backdrop-filter:blur(10px);max-width:236px}
+  .legend .li{display:flex;align-items:center;gap:7px;font-size:11px;margin:2px 0;color:var(--dim)}
+  .legend .d{width:10px;height:10px;border-radius:2px;flex:none}
+  @media(max-width:760px){ .top p{display:none} .legend{display:none} .stat{min-width:0} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud top">
+  <div>
+    <p class="eyebrow">Working in space · in-situ resources</p>
+    <h1>Make the propellant where you land.</h1>
+    <p>Hauling fuel from Earth is the tax the whole chain pays. An autonomous plant mines regolith, splits out its oxygen, and fills a tank on the surface — throttling itself to the power the sun gives, so the depot refills without a launch.</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">O₂ produced</div><div class="v" id="s-o">—</div></div>
+    <div class="stat"><div class="k">Power</div><div class="v" id="s-p">—</div></div>
+    <div class="stat"><div class="k">Efficiency</div><div class="v" id="s-e">—</div></div>
+    <div class="stat"><div class="k">Tank</div><div class="v" id="s-t">—</div></div>
+  </div>
+</div>
+<div class="hud legend">
+  <div class="li"><span class="d" style="background:#9a8467"></span>Regolith · autonomous excavator</div>
+  <div class="li"><span class="d" style="background:#cfaa5b"></span>Solar array · power</div>
+  <div class="li"><span class="d" style="background:#ff9e6e"></span>Electrolysis plant (throttled to power)</div>
+  <div class="li"><span class="d" style="background:#46c6b0"></span>Liquid-oxygen tank</div>
+</div>
+<div class="hud ctl">
+  <div class="seg"><button data-w="moon" class="on">Lunar regolith</button><button data-w="mars">Mars regolith</button></div>
+  <div class="sld">array<input id="pw" type="range" min="10" max="80" step="5" value="40"><b id="lpw">40 kW</b></div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),X=cv.getContext('2d');
+let W,H,DPR=Math.min(devicePixelRatio||1,2);
+function size(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;X.setTransform(DPR,0,0,DPR,0,0);}
+size();addEventListener('resize',size);
+const gv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+// world models (representative, labelled illustrative)
+const WORLDS={
+  moon:{ o2frac:0.42, e_spec:12, tank:600, daylen:16, name:'Lunar' }, // O2 mass fraction, kWh per kg O2, tank kg, day seconds
+  mars:{ o2frac:0.30, e_spec:9,  tank:600, daylen:18, name:'Mars'  },
+};
+const P={world:'moon', pmax:40};
+let E=null;
+function newRun(){const w=WORLDS[P.world];
+  return{ w, t:0, o2:0, reg:0, hopper:0, kwh:0, tankFill:0,
+    rover:{x:0.72, dir:1, load:0, phase:'DIG', dig:0}, plantGlow:0 };}
+function sun(e){ // 0..1 daylight fraction (day/night)
+  const ph=(e.t/e.w.daylen)%1; return Math.max(0, Math.sin(ph*Math.PI*2)); }
+function step(e,dt){
+  const w=e.w; e.t+=dt;
+  const day=sun(e); const power=P.pmax*day;               // kW available from the array
+  // --- autonomous excavator: shuttle regolith field <-> plant hopper ---
+  const r=e.rover, sp=0.16;
+  if(r.phase==='DIG'){ r.dig+=dt; if(r.dig>0.7){ r.load=120; r.dig=0; r.phase='HAUL'; } }
+  else if(r.phase==='HAUL'){ r.x-=sp*dt; if(r.x<=0.42){ r.x=0.42; e.hopper+=r.load; e.reg+=r.load; r.load=0; r.phase='RETURN'; } }
+  else if(r.phase==='RETURN'){ r.x+=sp*dt; if(r.x>=0.72){ r.x=0.72; r.phase='DIG'; } }
+  // --- plant: electrolysis throttled to available power AND available regolith ---
+  const byPower = power / w.e_spec;                        // kg O2 per hour at this power (honest: kWh/kg)
+  const o2rateMax = byPower * 9;                           // accelerated pace so a batch fills in ~seconds
+  const o2rate = Math.min(o2rateMax, e.hopper*8);          // limited by hopper feed when the excavator lags
+  if(power>1 && e.hopper>0.5 && e.tankFill<w.tank){
+    const dO2=Math.min(o2rate*dt, e.hopper*w.o2frac, w.tank-e.tankFill);
+    e.o2+=dO2; e.tankFill+=dO2; e.hopper-=dO2/w.o2frac; e.kwh+=dO2*w.e_spec; e.plantGlow=Math.min(1,power/P.pmax);
+  } else e.plantGlow*=Math.pow(0.2,dt);
+  e.power=power; e.day=day;
+}
+// ---- draw ----
+let last=performance.now(),stars=[];
+for(let i=0;i<80;i++)stars.push({x:Math.random(),y:Math.random()*0.6,r:Math.random()*1.1+.2,a:Math.random()*.5+.2});
+function draw(dt){
+  const e=E; if(!e)return; X.clearRect(0,0,W,H);
+  const gy=H*0.72;
+  // sky: day/night tint
+  const dcol=e.day; X.fillStyle='rgba('+(10+dcol*20)+','+(16+dcol*24)+','+(36+dcol*30)+',1)';X.fillRect(0,0,W,gy);
+  for(const s of stars){X.fillStyle='rgba(207,220,255,'+(s.a*(1-dcol*0.7))+')';X.beginPath();X.arc(s.x*W,s.y*H,s.r,0,6.28);X.fill();}
+  // sun arc
+  const ph=(e.t/e.w.daylen)%1, sa=Math.PI*(1-((ph*2)%1)); const sx=W*(((ph*2)%1)), sy=gy-Math.sin(((ph)%0.5)/0.5*Math.PI)*gy*0.7;
+  if(e.day>0.02){X.fillStyle='#ffd98a';X.shadowColor='#ffd98a';X.shadowBlur=24;X.beginPath();X.arc(W*(0.1+ph*0.8),gy-Math.max(0,Math.sin(ph*Math.PI*2))*gy*0.8,10,0,6.28);X.fill();X.shadowBlur=0;}
+  // ground
+  X.fillStyle='#15friendly'.replace('friendly','1024');X.fillRect(0,gy,W,H-gy);
+  X.fillStyle='rgba(154,132,103,.16)';X.fillRect(0,gy,W,H-gy);
+  X.strokeStyle='rgba(154,132,103,.6)';X.lineWidth=1.5;X.beginPath();X.moveTo(0,gy);X.lineTo(W,gy);X.stroke();
+  // regolith field texture (right)
+  X.fillStyle='rgba(154,132,103,.35)';for(let i=0;i<40;i++){const x=W*0.55+Math.random()*W*0.45;X.fillRect(x,gy+4+Math.random()*(H-gy-8),2,2);}
+  // solar array (left)
+  const arX=W*0.12; X.strokeStyle='rgba(207,170,91,.7)';X.lineWidth=2;X.beginPath();X.moveTo(arX,gy);X.lineTo(arX,gy-70);X.stroke();
+  for(let i=0;i<4;i++){X.fillStyle='rgba(207,170,91,'+(0.18+e.day*0.5)+')';X.strokeStyle='rgba(207,170,91,.7)';
+    X.beginPath();X.rect(arX-46+i*24,gy-84,20,26);X.fill();X.stroke();}
+  X.font='9px '+gv('--mono');X.fillStyle='rgba(207,170,91,.85)';X.textAlign='center';X.fillText((e.power||0).toFixed(0)+' kW',arX,gy-92);
+  // plant (center-left) with hopper + glow
+  const plX=W*0.40; X.save();X.translate(plX,gy);
+  X.fillStyle='#1a2444';X.strokeStyle='rgba(255,158,110,.7)';X.lineWidth=2;
+  X.beginPath();X.roundRect(-34,-72,68,72,5);X.fill();X.stroke();
+  X.fillStyle='rgba(255,158,110,'+(0.15+e.plantGlow*0.5)+')';X.fillRect(-30,-40,60,36); // reactor glow
+  X.fillStyle='#9a8467';const hp=Math.min(20,e.hopper*0.15);X.fillRect(-30,-12,60,-hp*0.0+12);X.fillStyle='rgba(154,132,103,.6)';X.fillRect(-30,-2-hp*0.4,60,2+hp*0.4);
+  X.restore();
+  X.fillStyle='rgba(255,158,110,.9)';X.textAlign='center';X.fillText('ELECTROLYSIS',plX,gy+16);
+  // LOX tank (center-right), fills teal
+  const tkX=W*0.56,tkY=gy,tkH=90,tkW=46; const fill=e.tankFill/e.w.tank;
+  X.strokeStyle='rgba(70,198,176,.8)';X.lineWidth=2;X.beginPath();X.roundRect(tkX-tkW/2,tkY-tkH,tkW,tkH,8);X.stroke();
+  X.fillStyle='rgba(70,198,176,.35)';X.fillRect(tkX-tkW/2+2,tkY-2-(tkH-4)*fill,tkW-4,(tkH-4)*fill);
+  X.fillStyle=gv('--teal');X.fillText('LOX',tkX,gy+16);
+  // O2 flow plant->tank
+  if(e.plantGlow>0.05){for(let i=0;i<4;i++){const p=((e.t*0.6)+i/4)%1;X.fillStyle='rgba(70,198,176,'+(0.7*(1-p))+')';X.beginPath();X.arc(plX+34+(tkX-tkW/2-plX-34)*p,gy-46-Math.sin(p*3)*4,2,0,6.28);X.fill();}}
+  // excavator rover
+  const rx=W*e.rover.x, ry=gy;
+  X.fillStyle='#1a2444';X.strokeStyle=gv('--gold');X.lineWidth=1.6;X.beginPath();X.roundRect(rx-16,ry-16,32,13,3);X.fill();X.stroke();
+  X.fillStyle='#0b1024';for(const dx of [-9,0,9]){X.beginPath();X.arc(rx+dx,ry-2,4,0,6.28);X.fill();X.strokeStyle=gv('--gold');X.stroke();}
+  // digging arm / load
+  if(e.rover.phase==='DIG'){X.strokeStyle=gv('--gold');X.lineWidth=2;const a=Math.sin(e.t*8)*0.3;X.beginPath();X.moveTo(rx+14,ry-14);X.lineTo(rx+24+Math.cos(a)*4,ry-2);X.stroke();
+    X.fillStyle='rgba(154,132,103,.7)';X.beginPath();X.arc(rx+26,ry-1,3,0,6.28);X.fill();}
+  if(e.rover.load>0){X.fillStyle='var(--reg)';X.fillStyle='#9a8467';X.beginPath();X.moveTo(rx-8,ry-16);X.lineTo(rx+8,ry-16);X.lineTo(rx+4,ry-24);X.lineTo(rx-4,ry-24);X.closePath();X.fill();}
+  // banner
+  X.font='13px '+gv('--mono');X.textAlign='center';X.fillStyle='rgba(139,160,189,.85)';
+  const line=e.day<0.05?'night · plant idle, waiting for power':(e.plantGlow>0.1?'splitting oxygen from regolith · throttled to the array':'excavating regolith');
+  X.fillText('sol '+(Math.floor(e.t/e.w.daylen)+1)+' · '+line,W*0.5,H*0.24);
+  if(e.tankFill>=e.w.tank-1){X.fillStyle=gv('--teal');X.fillText('✓ TANK FULL · '+e.w.tank+' kg LOX made on the surface, no launch',W*0.5,H*0.24);}
+  X.textAlign='left';
+}
+function panel(){const e=E;if(!e)return;
+  document.getElementById('s-o').textContent=e.o2.toFixed(0)+' kg';
+  document.getElementById('s-p').innerHTML='<span style="color:'+(e.power>1?gv('--gold'):gv('--faint'))+'">'+(e.power||0).toFixed(0)+' kW</span>';
+  document.getElementById('s-e').textContent=e.w.e_spec+' kWh/kg';
+  const pct=Math.round(e.tankFill/e.w.tank*100);
+  document.getElementById('s-t').innerHTML='<span style="color:'+(pct>=100?gv('--teal'):gv('--ink'))+'">'+pct+'%</span>';
+}
+let wait=0;
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
+  if(E){ step(E,dt*2.2); if(E.tankFill>=E.w.tank-1){wait+=dt;if(wait>2.5){wait=0;E=newRun();}} }
+  draw(dt);panel();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+[...document.querySelectorAll('.seg button')].forEach(b=>b.onclick=()=>{P.world=b.dataset.w;document.querySelectorAll('.seg button').forEach(x=>x.classList.toggle('on',x===b));E=newRun();wait=0;});
+$('pw').addEventListener('input',e=>{P.pmax=+e.target.value;$('lpw').textContent=P.pmax+' kW';});
+window.__isru=()=>E?{o2:+E.o2.toFixed(2),hopper:+E.hopper.toFixed(1),power:+(E.power||0).toFixed(1),t:+E.t.toFixed(1),tank:+E.tankFill.toFixed(1),phase:E.rover.phase}:null;
+E=newRun();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
