@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Precision landing — powered descent to a surface</title>
+<style>
+  :root{ --bg:#0b1024; --panel:rgba(12,18,38,.82); --edge:rgba(207,170,91,.26); --line:#243157;
+    --ink:#eef1f8; --dim:#8aa0bd; --faint:#5b6a8a; --gold:#cfaa5b; --teal:#46c6b0; --blue:#6ea8ff; --red:#ff6a6a;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Inter",system-ui,sans-serif; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:absolute;z-index:5}
+  .top{top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:15px 18px;gap:16px;pointer-events:none}
+  .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;margin:0 0 3px}
+  h1{margin:0;font-size:17px;font-weight:600}
+  .top p{margin:4px 0 0;font-size:12.5px;color:var(--dim);max-width:48ch;line-height:1.45}
+  .stats{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+  .stat{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:8px 12px;min-width:92px;backdrop-filter:blur(9px)}
+  .stat .k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .stat .v{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:2px}
+  .ctl{bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);flex-wrap:wrap;justify-content:center;max-width:94%}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{font-family:var(--mono);font-size:11px;padding:6px 11px;border:none;background:transparent;color:var(--dim);cursor:pointer}
+  .seg button.on{background:var(--gold);color:#0b1024;font-weight:600}
+  .sld{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .sld input{accent-color:var(--gold);width:96px;height:15px}
+  .sld b{color:var(--gold);min-width:56px;text-align:right}
+  .legend{left:18px;bottom:74px;background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:10px 12px;backdrop-filter:blur(10px);max-width:230px}
+  .legend .li{display:flex;align-items:center;gap:7px;font-size:11px;margin:2px 0;color:var(--dim)}
+  .legend .d{width:10px;height:10px;border-radius:2px;flex:none}
+  @media(max-width:760px){ .top p{display:none} .legend{display:none} .stat{min-width:0} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud top">
+  <div>
+    <p class="eyebrow">Working in space · precision landing</p>
+    <h1>Fly the fuel-optimal descent.</h1>
+    <p>Arriving is the last link of the chain. The lander reads the terrain, picks the safest flat site, and flies a closed-form optimal powered descent (ZEM/ZEV) that nulls position and velocity at touchdown — under a hard thrust limit, decided on the vehicle.</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">Altitude</div><div class="v" id="s-a">—</div></div>
+    <div class="stat"><div class="k">Descent rate</div><div class="v" id="s-v">—</div></div>
+    <div class="stat"><div class="k">Δv used</div><div class="v" id="s-f">—</div></div>
+    <div class="stat"><div class="k">Thrust</div><div class="v" id="s-t">—</div></div>
+  </div>
+</div>
+<div class="hud legend">
+  <div class="li"><span class="d" style="background:#8aa0bd"></span>Terrain + hazards</div>
+  <div class="li"><span class="d" style="background:#46c6b0"></span>Selected landing site</div>
+  <div class="li"><span class="d" style="background:#cfaa5b"></span>Lander + thrust vector</div>
+  <div class="li"><span class="d" style="background:#6ea8ff"></span>ZEM/ZEV guidance trajectory</div>
+</div>
+<div class="hud ctl">
+  <div class="seg"><button data-g="1.62" class="on">Moon</button><button data-g="3.71">Mars</button><button data-g="9.81">Earth</button></div>
+  <div class="sld">engine<input id="thr" type="range" min="1.4" max="4" step="0.1" value="2.6"><b id="lthr">×2.6 g</b></div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),X=cv.getContext('2d');
+let W,H,DPR=Math.min(devicePixelRatio||1,2);
+function size(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;X.setTransform(DPR,0,0,DPR,0,0);}
+size();addEventListener('resize',size);
+const gv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const P={grav:1.62,twr:2.6};   // gravity (m/s²) and engine thrust-to-weight
+// --- ZEM/ZEV powered-descent guidance ---
+function zemzev(r,v,rT,g,tgo){
+  const zx=rT[0]-(r[0]+v[0]*tgo+0.5*g[0]*tgo*tgo), zy=rT[1]-(r[1]+v[1]*tgo+0.5*g[1]*tgo*tgo);
+  const ex=-(v[0]+g[0]*tgo), ey=-(v[1]+g[1]*tgo);
+  return [6/(tgo*tgo)*zx-2/tgo*ex, 6/(tgo*tgo)*zy-2/tgo*ey];
+}
+// terrain: a rolling profile + hazards; pick the safest flat site
+let terrain=[], hazards=[], pad=0, groundAt=x=>0;
+function buildTerrain(){
+  terrain=[]; const span=1000, seg=24;
+  let h=0; const pts=[];
+  for(let i=0;i<=seg;i++){const x=-span/2+span*i/seg; h+=(Math.random()*2-1)*9; h*=0.86; pts.push([x,h]);}
+  terrain=pts;
+  groundAt=(x)=>{for(let i=0;i<pts.length-1;i++){if(x>=pts[i][0]&&x<=pts[i+1][0]){const t=(x-pts[i][0])/(pts[i+1][0]-pts[i][0]);return pts[i][1]+t*(pts[i+1][1]-pts[i][1]);}}return 0;};
+  hazards=[]; for(let i=0;i<7;i++){const x=-420+Math.random()*840;hazards.push({x,r:6+Math.random()*16});}
+  // candidate sites: sample x, score by local flatness + hazard clearance
+  let bestX=0,bestS=-1;
+  for(let x=-380;x<=380;x+=20){const flat=Math.abs(groundAt(x-18)-groundAt(x+18));
+    let clr=99;for(const hz of hazards)clr=Math.min(clr,Math.hypot(x-hz.x, groundAt(x)-groundAt(hz.x))-hz.r);
+    const score=clr*2 - flat*3; if(score>bestS){bestS=score;bestX=x;}}
+  pad=bestX;
+}
+// --- run state ---
+let E=null;
+function newRun(){
+  buildTerrain();
+  const px=pad, py=groundAt(pad);
+  const r=[px+(Math.random()*2-1)*320, py+780+Math.random()*220];
+  const v=[(Math.random()*2-1)*22, -(30+Math.random()*30)];
+  const g=[0,-P.grav], aMax=P.twr*P.grav;
+  // pick fuel-optimal flight time by a coarse search
+  let bestT=25,bestF=1e9;
+  for(let T=10;T<=70;T+=3){const s=simDescent(r,v,g,aMax,[px,py],T);if(s.landed&&s.fuel<bestF){bestF=s.fuel;bestT=T;}}
+  return {r:r.slice(),v:v.slice(),g,aMax,rT:[px,py],T:bestT,t:0,fuel:0,thr:0,trail:[[r[0],r[1]]],plan:simDescent(r,v,g,aMax,[px,py],bestT).traj,done:false,soft:false};
+}
+function simDescent(r0,v0,g,aMax,rT,T){ // headless rollout for planning
+  let r=r0.slice(),v=v0.slice(),fuel=0,t=0; const traj=[r.slice()];
+  for(let k=0;k<4000;k++){const tgo=Math.max(1,T-t);let a=zemzev(r,v,rT,g,tgo);const am=Math.hypot(...a);if(am>aMax)a=a.map(x=>x*aMax/am);
+    v=[v[0]+(a[0]+g[0])*0.1,v[1]+(a[1]+g[1])*0.1];r=[r[0]+v[0]*0.1,r[1]+v[1]*0.1];fuel+=Math.hypot(...a)*0.1;t+=0.1;traj.push(r.slice());
+    if(r[1]<=groundAt(r[0])){return{landed:Math.abs(r[0]-rT[0])<12&&Math.hypot(...v)<2.2,fuel,traj};}}
+  return{landed:false,fuel,traj};
+}
+function step(e,dt){
+  const tgo=Math.max(1,e.T-e.t); let a=zemzev(e.r,e.v,e.rT,e.g,tgo);
+  const am=Math.hypot(...a); e.thr=Math.min(1,am/e.aMax); if(am>e.aMax)a=a.map(x=>x*e.aMax/am);
+  e.aVec=a;
+  e.v=[e.v[0]+(a[0]+e.g[0])*dt, e.v[1]+(a[1]+e.g[1])*dt];
+  e.r=[e.r[0]+e.v[0]*dt, e.r[1]+e.v[1]*dt];
+  e.fuel+=Math.hypot(...a)*dt; e.t+=dt; e.trail.push([e.r[0],e.r[1]]); if(e.trail.length>200)e.trail.shift();
+  if(e.r[1]<=groundAt(e.r[0])){ e.r[1]=groundAt(e.r[0]); e.done=true;
+    e.soft=Math.abs(e.r[0]-e.rT[0])<12 && Math.hypot(...e.v)<2.2; }
+}
+// --- draw ---
+let last=performance.now(),wait=0,stars=[];
+for(let i=0;i<80;i++)stars.push({x:Math.random(),y:Math.random()*0.7,r:Math.random()*1.1+.2,a:Math.random()*.5+.2});
+function draw(dt){
+  const e=E; if(!e)return;
+  X.clearRect(0,0,W,H);
+  for(const s of stars){X.fillStyle='rgba(207,220,255,'+s.a+')';X.beginPath();X.arc(s.x*W,s.y*H,s.r,0,6.28);X.fill();}
+  // world→screen: keep pad centred-ish, scale to fit altitude
+  const sc=Math.min(W,H)/1050, cx=W*0.5-e.rT[0]*sc, gy=H*0.86;
+  const wx=x=>cx+x*sc, wy=y=>gy-y*sc;
+  // terrain fill
+  X.beginPath();X.moveTo(wx(terrain[0][0]),H);
+  for(const[x,h] of terrain)X.lineTo(wx(x),wy(h));
+  X.lineTo(wx(terrain[terrain.length-1][0]),H);X.closePath();
+  X.fillStyle='#12friendly'.replace('friendly','1a30');X.fill();
+  X.strokeStyle='rgba(138,160,189,.6)';X.lineWidth=1.5;X.beginPath();
+  terrain.forEach(([x,h],i)=>{const X2=wx(x),Y2=wy(h);i?X.lineTo(X2,Y2):X.moveTo(X2,Y2);});X.stroke();
+  // hazards
+  for(const hz of hazards){X.fillStyle='rgba(255,106,106,.18)';X.strokeStyle='rgba(255,106,106,.5)';X.lineWidth=1;
+    X.beginPath();X.ellipse(wx(hz.x),wy(groundAt(hz.x)),hz.r*sc,hz.r*sc*0.5,0,0,6.28);X.fill();X.stroke();}
+  // selected pad
+  const px=wx(e.rT[0]),py=wy(e.rT[1]);
+  X.strokeStyle=gv('--teal');X.lineWidth=2.4;X.beginPath();X.moveTo(px-26,py);X.lineTo(px+26,py);X.stroke();
+  X.strokeStyle='rgba(70,198,176,.5)';X.setLineDash([3,4]);X.beginPath();X.moveTo(px,py);X.lineTo(px,py-H);X.stroke();X.setLineDash([]);
+  X.font='10px '+gv('--mono');X.fillStyle=gv('--teal');X.textAlign='center';X.fillText('SELECTED SITE',px,py+16);X.textAlign='left';
+  // planned guidance trajectory
+  if(e.plan&&e.plan.length){X.strokeStyle='rgba(110,168,255,.4)';X.lineWidth=1.3;X.setLineDash([4,4]);X.beginPath();
+    e.plan.forEach((p,i)=>{const Xx=wx(p[0]),Yy=wy(p[1]);i?X.lineTo(Xx,Yy):X.moveTo(Xx,Yy);});X.stroke();X.setLineDash([]);}
+  // flown trail
+  X.strokeStyle='rgba(207,170,91,.6)';X.lineWidth=1.6;X.beginPath();
+  e.trail.forEach((p,i)=>{const Xx=wx(p[0]),Yy=wy(p[1]);i?X.lineTo(Xx,Yy):X.moveTo(Xx,Yy);});X.stroke();
+  // lander + thrust plume
+  const lx=wx(e.r[0]),ly=wy(e.r[1]);
+  if(!e.done && e.aVec){const th=Math.hypot(...e.aVec),ux=-e.aVec[0]/(th||1),uy=e.aVec[1]/(th||1);
+    const L=8+e.thr*34;X.strokeStyle='rgba(255,158,110,.9)';X.lineWidth=4;X.beginPath();X.moveTo(lx,ly);X.lineTo(lx+ux*L,ly+uy*L);X.stroke();
+    X.strokeStyle='rgba(255,200,120,.5)';X.lineWidth=8;X.beginPath();X.moveTo(lx,ly);X.lineTo(lx+ux*L*0.5,ly+uy*L*0.5);X.stroke();}
+  const col=e.done?(e.soft?gv('--teal'):gv('--red')):gv('--gold');
+  X.fillStyle=col;X.strokeStyle='#fff3d8';X.lineWidth=1;X.save();X.translate(lx,ly);
+  X.beginPath();X.moveTo(0,-8);X.lineTo(6,4);X.lineTo(-6,4);X.closePath();X.fill();X.stroke();
+  X.strokeStyle=col;X.beginPath();X.moveTo(-6,4);X.lineTo(-8,9);X.moveTo(6,4);X.lineTo(8,9);X.stroke();X.restore();
+  // banner
+  X.font='14px '+gv('--mono');X.textAlign='center';
+  if(e.done){X.fillStyle=e.soft?gv('--teal'):gv('--red');X.fillText(e.soft?('✓ SOFT LANDING · '+Math.hypot(...e.v).toFixed(1)+' m/s · '+Math.abs(e.r[0]-e.rT[0]).toFixed(1)+' m from pad'):('✕ HARD IMPACT · '+Math.hypot(...e.v).toFixed(0)+' m/s'),W*0.5,H*0.16);}
+  else{X.fillStyle='rgba(139,160,189,.85)';X.fillText('powered descent · nulling position and velocity at touchdown',W*0.5,H*0.16);}
+  X.textAlign='left';
+}
+function panel(){const e=E;if(!e)return;
+  const alt=(e.r[1]-groundAt(e.r[0]));
+  document.getElementById('s-a').textContent=Math.max(0,alt).toFixed(0)+' m';
+  const vr=-e.v[1];document.getElementById('s-v').innerHTML='<span style="color:'+(vr>8?gv('--red'):vr>3?gv('--gold'):gv('--teal'))+'">'+vr.toFixed(1)+' m/s</span>';
+  document.getElementById('s-f').textContent=e.fuel.toFixed(0)+' m/s';
+  document.getElementById('s-t').innerHTML='<span style="color:'+(e.thr>0.98?gv('--red'):gv('--gold'))+'">'+(e.thr*100).toFixed(0)+'%</span>';
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
+  if(E&&!E.done)step(E,dt*1.4);
+  if(E&&E.done){wait+=dt;if(wait>1.8){wait=0;E=newRun();}}
+  draw(dt);panel();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+[...document.querySelectorAll('.seg button')].forEach(b=>b.onclick=()=>{P.grav=+b.dataset.g;document.querySelectorAll('.seg button').forEach(x=>x.classList.toggle('on',x===b));E=newRun();wait=0;});
+$('thr').addEventListener('input',e=>{P.twr=+e.target.value;$('lthr').textContent='×'+P.twr.toFixed(1)+' g';E=newRun();wait=0;});
+E=newRun();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

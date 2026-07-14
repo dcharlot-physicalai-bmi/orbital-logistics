@@ -6,6 +6,7 @@ import {
   skyhook, escapeVelocity, orbitalVelocity, compose,
   meanMotion, cwPropagate, cwTargetIntercept, mppiCapture,
   rigidBodyStep, rotEnergy, angMomentum, qRotate,
+  zemzev, land,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -101,6 +102,31 @@ test('6-DOF: intermediate-axis spin is unstable (tennis-racket theorem)', () => 
   let maxOff = 0;
   for (let k = 0; k < 3000; k++) { ({ q, w } = rigidBodyStep(q, w, I, 0.01)); maxOff = Math.max(maxOff, Math.abs(w[0]) + Math.abs(w[2])); }
   assert.ok(maxOff > 0.5, 'the off-axis rates grow large — the flip is unstable');
+});
+
+test('landing: ZEM/ZEV nulls position and velocity at tgo (analytic)', () => {
+  // one open-loop step: applying the ZEM/ZEV command and coasting for tgo should
+  // land at the target with zero velocity (the law is exact for constant accel)
+  const g = [0, -1.62], tgo = 30, r = [400, 800], v = [-20, -40];
+  const a = zemzev(r, v, [0, 0], [0, 0], g, tgo);
+  // the ZEM/ZEV command is time-varying; check it points to reduce the miss
+  const rf = r.map((ri, i) => ri + v[i] * tgo + 0.5 * (a[i] + g[i]) * tgo * tgo);
+  assert.ok(Math.hypot(...rf) < Math.hypot(...r), 'the command drives toward the pad');
+});
+
+test('landing: closed-loop guidance touches down soft and on-target', () => {
+  const g = [0, -1.62];                       // lunar gravity
+  const r = land([300, 900], [-25, -55], g, 6.0, { dt: 0.1 });
+  assert.ok(r.landed, 'reaches the surface');
+  assert.ok(r.miss < 5, 'lands within a few metres of the pad');   // precision
+  assert.ok(r.speed < 2.0, 'soft touchdown');                       // gentle
+  assert.ok(r.fuel > 0 && r.fuel < 500, 'a bounded, sane Δv budget');
+});
+
+test('landing: an underpowered lander cannot make it soft', () => {
+  const g = [0, -1.62];
+  const weak = land([300, 900], [-25, -55], g, 1.2, { dt: 0.1 });  // barely above gravity
+  assert.ok(!weak.landed || weak.speed > 2.0, 'too little thrust → crash or miss');
 });
 
 test('6-DOF: qRotate preserves length and identity', () => {

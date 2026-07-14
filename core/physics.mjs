@@ -227,6 +227,50 @@ export function mppiPlan(s, nominal, n, opts={}, seed=1){
     out[h]=[ax/wsum, ay/wsum]; }
   return out;
 }
+// --- Precision landing: ZEM/ZEV powered-descent guidance ----------------------
+// Arriving at a surface is the last link of the transport chain. Zero-Effort-Miss /
+// Zero-Effort-Velocity guidance is the closed-form optimal law for it: predict where
+// a coasting vehicle would end up under gravity alone (the "zero-effort" miss in
+// position and velocity), and command the thrust acceleration that nulls both by the
+// time-to-go. It is the energy-optimal solution and the backbone of planetary-landing
+// guidance. r,v: current; rT,vT: target (usually the pad, at rest); g: gravity vector;
+// tgo: time-to-go. Returns the commanded thrust acceleration (gravity handled separately).
+export function zemzev(r, v, rT, vT, g, tgo) {
+  const zem = rT.map((rt, i) => rt - (r[i] + v[i] * tgo + 0.5 * g[i] * tgo * tgo));
+  const zev = vT.map((vt, i) => vt - (v[i] + g[i] * tgo));
+  return zem.map((z, i) => (6 / (tgo * tgo)) * z - (2 / tgo) * zev[i]);
+}
+// One closed-loop descent for a fixed nominal flight time T: ZEM/ZEV with the
+// time-to-go counting down from T, thrust clamped to aMax, integrated under gravity.
+export function landOnce(r0, v0, g, aMax, T, opts = {}) {
+  const dt = opts.dt || 0.1, rT = opts.rT || r0.map(() => 0), vT = opts.vT || v0.map(() => 0);
+  let r = r0.slice(), v = v0.slice(), fuel = 0, t = 0; const traj = [r.slice()];
+  for (let k = 0; k < 6000; k++) {
+    const tgo = Math.max(1.0, T - t);           // count down; clamp to avoid the 1/tgo² blow-up
+    let a = zemzev(r, v, rT, vT, g, tgo);
+    const am = Math.hypot(...a); if (am > aMax) a = a.map(x => x * aMax / am);
+    v = v.map((vi, i) => vi + (a[i] + g[i]) * dt);
+    r = r.map((ri, i) => ri + v[i] * dt);
+    fuel += Math.hypot(...a) * dt; t += dt; traj.push(r.slice());
+    if (r[r.length - 1] <= 0) {                  // last coordinate is altitude
+      const miss = Math.hypot(...r.map((ri, i) => ri - rT[i])), speed = Math.hypot(...v);
+      return { landed: miss < 8 && speed < 2.0, miss, speed, fuel, t, traj };
+    }
+  }
+  const miss = Math.hypot(...r.map((ri, i) => ri - rT[i]));
+  return { landed: false, miss, speed: Math.hypot(...v), fuel, t, traj };
+}
+// Fuel-optimal landing: search the nominal flight time for the least-fuel soft
+// touchdown (a real min-fuel search over the feasible flight-time window).
+export function land(r0, v0, g, aMax, opts = {}) {
+  let best = null;
+  for (let T = 8; T <= 70; T += 2) {
+    const r = landOnce(r0, v0, g, aMax, T, opts);
+    if (r.landed && (!best || r.fuel < best.fuel)) best = r;
+  }
+  return best || landOnce(r0, v0, g, aMax, 30, opts);
+}
+
 // --- 6-DOF: torque-free rigid-body tumble of a non-cooperative target ----------
 // A dead satellite tumbles under no torque. Its attitude follows Euler's equations
 // on the principal inertias I=[I1,I2,I3], integrated with the quaternion kinematics.
