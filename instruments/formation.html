@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Formation flight — a self-coordinating constellation</title>
+<style>
+  :root{ --bg:#0b1024; --panel:rgba(12,18,38,.82); --edge:rgba(207,170,91,.26); --line:#243157;
+    --ink:#eef1f8; --dim:#8aa0bd; --faint:#5b6a8a; --gold:#cfaa5b; --teal:#46c6b0; --blue:#6ea8ff; --red:#ff6a6a;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Inter",system-ui,sans-serif; }
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .hud{position:absolute;z-index:5}
+  .top{top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:15px 18px;gap:16px;pointer-events:none}
+  .eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;margin:0 0 3px}
+  h1{margin:0;font-size:17px;font-weight:600}
+  .top p{margin:4px 0 0;font-size:12.5px;color:var(--dim);max-width:48ch;line-height:1.45}
+  .stats{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}
+  .stat{background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:8px 12px;min-width:98px;backdrop-filter:blur(9px)}
+  .stat .k{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .stat .v{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:2px}
+  .ctl{bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:9px 13px;backdrop-filter:blur(10px);flex-wrap:wrap;justify-content:center;max-width:94%}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{font-family:var(--mono);font-size:11px;padding:6px 11px;border:none;background:transparent;color:var(--dim);cursor:pointer}
+  .seg button.on{background:var(--gold);color:#0b1024;font-weight:600}
+  .sld{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .sld input{accent-color:var(--gold);width:88px;height:15px}
+  .sld b{color:var(--gold);min-width:32px;text-align:right}
+  .legend{left:18px;bottom:74px;background:var(--panel);border:1px solid var(--edge);border-radius:11px;padding:10px 12px;backdrop-filter:blur(10px);max-width:232px}
+  .legend .li{display:flex;align-items:center;gap:7px;font-size:11px;margin:2px 0;color:var(--dim)}
+  .legend .d{width:10px;height:10px;border-radius:2px;flex:none}
+  @media(max-width:760px){ .top p{display:none} .legend{display:none} .stat{min-width:0} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud top">
+  <div>
+    <p class="eyebrow">Coordinating · distributed formation flight</p>
+    <h1>A constellation that keeps its own shape.</h1>
+    <p>No ground controller flies twelve satellites at once. Each holds its slot from its neighbours alone, avoids the others, and — on a new pattern — claims the nearest open slot and transfers without a collision. Coordination with no one in charge.</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">Satellites</div><div class="v" id="s-n">—</div></div>
+    <div class="stat"><div class="k">Formation err</div><div class="v" id="s-e">—</div></div>
+    <div class="stat"><div class="k">Min sep</div><div class="v" id="s-m">—</div></div>
+    <div class="stat"><div class="k">Pattern</div><div class="v" id="s-p">—</div></div>
+  </div>
+</div>
+<div class="hud legend">
+  <div class="li"><span class="d" style="background:#cfaa5b"></span>Satellite (holds its own slot)</div>
+  <div class="li"><span class="d" style="background:rgba(70,198,176,.6)"></span>Formation slot · target pattern</div>
+  <div class="li"><span class="d" style="background:#6ea8ff"></span>Neighbour link (local sensing)</div>
+  <div class="li"><span class="d" style="background:#ff6a6a"></span>Collision-avoidance push</div>
+</div>
+<div class="hud ctl">
+  <div class="seg" id="pat"><button data-p="ring" class="on">Ring</button><button data-p="line">Train</button><button data-p="grid">Aperture</button><button data-p="v">Wedge</button></div>
+  <div class="sld">agents<input id="nn" type="range" min="6" max="16" step="1" value="12"><b id="lnn">12</b></div>
+</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),X=cv.getContext('2d');
+let W,H,DPR=Math.min(devicePixelRatio||1,2);
+function size(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;X.setTransform(DPR,0,0,DPR,0,0);}
+size();addEventListener('resize',size);
+const gv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const P={n:12, pat:'ring', autopat:true};
+const R=170;                          // formation scale (world units)
+// pattern generators -> array of slot positions (formation frame, centred)
+function slots(pat,n){
+  const out=[];
+  if(pat==='ring'){for(let i=0;i<n;i++){const a=i/n*6.283;out.push([Math.cos(a)*R,Math.sin(a)*R]);}}
+  else if(pat==='line'){for(let i=0;i<n;i++)out.push([(i-(n-1)/2)*(2*R/(n-1||1)),0]);}
+  else if(pat==='grid'){const c=Math.ceil(Math.sqrt(n)),rows=Math.ceil(n/c);for(let i=0;i<n;i++){const gx=i%c,gy=(i/c)|0;out.push([(gx-(c-1)/2)*(1.6*R/(c-1||1)),(gy-(rows-1)/2)*(1.6*R/(rows-1||1))]);}}
+  else {for(let i=0;i<n;i++){const s=i-(n-1)/2, side=Math.sign(s)||1;out.push([Math.abs(s)*(R/((n-1)/2||1))*0.9, -Math.abs(s)*(R/((n-1)/2||1))*0.9*side*0+ s*0]);
+    out[i]=[-Math.abs(s)*(1.7*R/(n||1)), s*(1.5*R/(n||1))];}}
+  return out;
+}
+let E=null;
+function newRun(){
+  const n=P.n; const sl=slots(P.pat,n);
+  const sats=[]; for(let i=0;i<n;i++){const a=Math.random()*6.283, rr=R*0.4+Math.random()*R*0.5;
+    sats.push({x:Math.cos(a)*rr,y:Math.sin(a)*rr,vx:0,vy:0,slot:i,trail:[]});}
+  return{ n, sats, sl, rot:0, t:0, minSep:999, ferr:0, dv:0, patName:P.pat };}
+// greedy nearest-slot assignment (each agent claims the closest free slot)
+function assign(e){
+  const worldSlot=i=>{const s=e.sl[i],c=Math.cos(e.rot),si=Math.sin(e.rot);return [s[0]*c-s[1]*si, s[0]*si+s[1]*c];};
+  const free=e.sl.map((_,i)=>i), order=e.sats.map((_,i)=>i);
+  const taken=new Array(e.sl.length).fill(false);
+  // sort agents by distance to their nearest slot, assign greedily (reduces crossings)
+  for(const ai of order){let best=-1,bd=1e9;const s=e.sats[ai];
+    for(let k=0;k<e.sl.length;k++){if(taken[k])continue;const w=worldSlot(k);const d=Math.hypot(w[0]-s.x,w[1]-s.y);if(d<bd){bd=d;best=k;}}
+    e.sats[ai].slot=best; taken[best]=true;}
+}
+function reconfigure(pat){E.sl=slots(pat,E.n);E.patName=pat;assign(E);}
+const ROT=0.07;                            // gentle orbital rotation rate
+function step(e,dt){
+  e.t+=dt; e.rot+=ROT*dt;
+  const c=Math.cos(e.rot),si=Math.sin(e.rot);
+  let minSep=999, ferrSum=0;
+  for(let i=0;i<e.n;i++){const s=e.sats[i], sl=e.sl[s.slot];
+    const tx=sl[0]*c-sl[1]*si, ty=sl[0]*si+sl[1]*c;         // slot in world frame
+    const svx=-ROT*ty, svy=ROT*tx;                          // the slot's own velocity (tracks the rotation)
+    let ax=2.8*(tx-s.x)-2.8*(s.vx-svx), ay=2.8*(ty-s.y)-2.8*(s.vy-svy); // keeping with feedforward
+    s.rep=0;
+    for(let j=0;j<e.n;j++){if(j===i)continue;const dx=s.x-e.sats[j].x,dy=s.y-e.sats[j].y,d=Math.hypot(dx,dy);
+      if(d<minSep)minSep=d;
+      if(d<48){const w=(48-d)/48;ax+=dx/(d||1e-3)*w*w*420;ay+=dy/(d||1e-3)*w*w*420;s.rep=Math.max(s.rep,w);}}
+    const am=Math.hypot(ax,ay), U=140; if(am>U){ax*=U/am;ay*=U/am;}
+    s.vx+=ax*dt;s.vy+=ay*dt;s.x+=s.vx*dt;s.y+=s.vy*dt;
+    e.dv+=Math.hypot(ax,ay)*dt*0.02;
+    ferrSum+=Math.hypot(tx-s.x,ty-s.y);
+    s.trail.push([s.x,s.y]);if(s.trail.length>36)s.trail.shift();
+  }
+  e.minSep=minSep; e.ferr=ferrSum/e.n;
+}
+// ---- draw ----
+let last=performance.now(),stars=[],patTimer=0,patIdx=0;
+const PATS=['ring','grid','v','line'];
+for(let i=0;i<70;i++)stars.push({x:Math.random(),y:Math.random(),r:Math.random()*1.1+.2,a:Math.random()*.5+.2});
+function draw(dt){
+  const e=E; if(!e)return; X.clearRect(0,0,W,H);
+  for(const s of stars){X.fillStyle='rgba(207,220,255,'+s.a+')';X.beginPath();X.arc(s.x*W,s.y*H,s.r,0,6.28);X.fill();}
+  const cx=W*0.5, cy=H*0.48, sc=Math.min(W,H)/560;
+  const wx=x=>cx+x*sc, wy=y=>cy+y*sc;
+  const c=Math.cos(e.rot),si=Math.sin(e.rot);
+  // reference: the target-orbit centre + a faint rotating ring guide
+  X.strokeStyle='rgba(139,160,189,.12)';X.setLineDash([2,6]);X.beginPath();X.arc(cx,cy,R*sc,0,6.28);X.stroke();X.setLineDash([]);
+  X.fillStyle='rgba(139,160,189,.5)';X.beginPath();X.arc(cx,cy,2,0,6.28);X.fill();
+  // slots (target pattern, world frame)
+  for(const sl of e.sl){const tx=sl[0]*c-sl[1]*si, ty=sl[0]*si+sl[1]*c;
+    X.strokeStyle='rgba(70,198,176,.4)';X.lineWidth=1;X.beginPath();X.arc(wx(tx),wy(ty),5,0,6.28);X.stroke();}
+  // neighbour links (each sat to its 2 nearest) — the local sensing mesh
+  X.strokeStyle='rgba(110,168,255,.18)';X.lineWidth=1;
+  for(let i=0;i<e.n;i++){const a=e.sats[i];const nb=e.sats.map((s,j)=>({j,d:j===i?1e9:Math.hypot(s.x-a.x,s.y-a.y)})).sort((p,q)=>p.d-q.d).slice(0,2);
+    for(const{j}of nb){X.beginPath();X.moveTo(wx(a.x),wy(a.y));X.lineTo(wx(e.sats[j].x),wy(e.sats[j].y));X.stroke();}}
+  // satellites + trails
+  for(const s of e.sats){
+    for(let i=1;i<s.trail.length;i++){const al=i/s.trail.length;X.strokeStyle='rgba(207,170,91,'+(al*.35)+')';X.lineWidth=1.2;X.beginPath();X.moveTo(wx(s.trail[i-1][0]),wy(s.trail[i-1][1]));X.lineTo(wx(s.trail[i][0]),wy(s.trail[i][1]));X.stroke();}
+    const col=s.rep>0.15?gv('--red'):gv('--gold');
+    X.fillStyle=col;X.beginPath();X.arc(wx(s.x),wy(s.y),4,0,6.28);X.fill();
+    X.strokeStyle=s.rep>0.15?'rgba(255,106,106,.5)':'rgba(207,170,91,.35)';X.lineWidth=1;X.beginPath();X.arc(wx(s.x),wy(s.y),7,0,6.28);X.stroke();
+  }
+  // banner
+  X.font='13px '+gv('--mono');X.textAlign='center';X.fillStyle='rgba(139,160,189,.85)';
+  const converged=e.ferr<12;
+  X.fillText(converged?'formation held · each satellite keeping its own slot':'reconfiguring · claiming slots and transferring, collision-free',W*0.5,H*0.15);
+  X.textAlign='left';
+}
+function panel(){const e=E;if(!e)return;
+  document.getElementById('s-n').textContent=e.n+'';
+  document.getElementById('s-e').innerHTML='<span style="color:'+(e.ferr<8?gv('--teal'):gv('--gold'))+'">'+e.ferr.toFixed(1)+' m</span>';
+  document.getElementById('s-m').innerHTML='<span style="color:'+(e.minSep<22?gv('--red'):gv('--teal'))+'">'+e.minSep.toFixed(0)+' m</span>';
+  document.getElementById('s-p').innerHTML='<span style="color:var(--gold);text-transform:capitalize">'+e.patName+'</span>';
+}
+function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
+  if(E){ step(E,dt*1.4);
+    if(P.autopat){patTimer+=dt;if(patTimer>6){patTimer=0;patIdx=(patIdx+1)%PATS.length;P.pat=PATS[patIdx];reconfigure(P.pat);
+      document.querySelectorAll('#pat button').forEach(b=>b.classList.toggle('on',b.dataset.p===P.pat));}}
+  }
+  draw(dt);panel();requestAnimationFrame(tick);}
+const $=id=>document.getElementById(id);
+document.querySelectorAll('#pat button').forEach(b=>b.onclick=()=>{P.pat=b.dataset.p;P.autopat=false;patTimer=0;
+  document.querySelectorAll('#pat button').forEach(x=>x.classList.toggle('on',x===b));reconfigure(P.pat);});
+$('nn').addEventListener('input',e=>{P.n=+e.target.value;$('lnn').textContent=P.n;E=newRun();});
+window.__form=()=>E?{n:E.n,ferr:+E.ferr.toFixed(1),minSep:+E.minSep.toFixed(0),pat:E.patName}:null;
+E=newRun();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
