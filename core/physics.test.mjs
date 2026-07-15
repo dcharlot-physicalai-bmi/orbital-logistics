@@ -8,6 +8,7 @@ import {
   rigidBodyStep, rotEnergy, angMomentum, qRotate,
   zemzev, land,
   formationRun, formationSlots, assignSlots,
+  zemzevCost, optimalTgo, landGuidance, landFeedback,
 } from './physics.mjs';
 
 const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} not within ${tol} of ${b}`);
@@ -178,4 +179,35 @@ test('formation: greedy assignment is a valid permutation (no shared slots)', ()
   const a = assignSlots(sats, slots, 0.3);
   assert.equal(new Set(a).size, 8, 'every agent claims a distinct slot');
   assert.ok(a.every(k => k >= 0 && k < 8), 'slot indices in range');
+});
+
+test('clock-free descent: optimalTgo minimises the closed-form ZEM/ZEV energy cost', () => {
+  const g = [0, -1.62], r = [180, 700], v = [-12, -40];
+  const t = optimalTgo(r, v, g);
+  const J = tg => zemzevCost(r, v, [0, 0], [0, 0], g, tg);
+  assert.ok(t > 1 && t < 120, `a sane time-to-go, got ${t}`);
+  assert.ok(J(t) <= J(t * 0.9) && J(t) <= J(t * 1.1), 'cost is minimal at the solved tgo');
+});
+
+test('clock-free descent: landGuidance is pure state feedback (no clock, no memory)', () => {
+  const g = [0, -3.71], aMax = 2.6 * 3.71;
+  const a1 = landGuidance([120, 500], [-8, -30], g, aMax);
+  const a2 = landGuidance([120, 500], [-8, -30], g, aMax);   // same state, later "time"
+  near(a1[0], a2[0], 1e-12); near(a1[1], a2[1], 1e-12);
+  assert.ok(Math.hypot(...a1) <= aMax + 1e-9, 'respects the engine limit');
+});
+
+test('clock-free descent: lands soft and on the pad without a flight-time schedule', () => {
+  for (const grav of [1.62, 3.71, 9.81]) {
+    const r = landFeedback([250, 800], [-15, -35], [0, -grav], 2.8 * grav, { dt: 0.1 });
+    assert.ok(r.landed, `soft landing at g=${grav}`);
+    assert.ok(r.miss < 2, `on the pad at g=${grav}, miss ${r.miss}`);
+    assert.ok(r.speed < 2.0, `gentle touchdown at g=${grav}, ${r.speed} m/s`);
+  }
+});
+
+test('clock-free descent: an underpowered lander still cannot make it soft', () => {
+  const g = [0, -1.62];
+  const weak = landFeedback([250, 800], [-15, -55], g, 1.05 * 1.62, { dt: 0.1 }); // barely > gravity
+  assert.ok(!weak.landed, 'too little thrust cannot be fixed by better guidance');
 });

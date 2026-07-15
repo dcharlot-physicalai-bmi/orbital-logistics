@@ -20,7 +20,7 @@ Each is a self-contained page that runs fully in the browser, on the device. Ope
 | Instrument | File | What it is |
 |---|---|---|
 | **Compose the journey** | `instruments/compose.html` | A Δv-architecture composer: stack reusable infrastructure and autonomous in-space transport against a destination's velocity budget. The mass-ratio math is the exact rocket equation; a segment a single vehicle could never fly is marked so, and payload is read as a real mass fraction. |
-| **Precision landing** | `instruments/landing.html` | Arriving at a surface. Closed-form **ZEM/ZEV** powered-descent guidance nulls position and velocity at touchdown under a hard thrust limit, picking a hazard-free pad; under-power it and it correctly cannot land soft. Moon / Mars / Earth. |
+| **Precision landing** | `instruments/landing.html` | Arriving at a surface. Closed-form **ZEM/ZEV** powered-descent guidance nulls position and velocity at touchdown under a hard thrust limit, picking a hazard-free pad; under-power it and it correctly cannot land soft. Moon / Mars / Earth. Toggle where the time-to-go comes from: **Scheduled** (search a flight time, fly the clock down), **Clock-free** (solve the optimal time-to-go from the state every step), or **Learned** (a released 1,281-param net predicts it in one forward pass, on-device). |
 | **On-orbit capture** | `instruments/orbital-capture.html` | The autonomy that unites the chain. A chaser estimates a **tumbling, non-cooperative** target's pose with a Kalman filter, holds a certified approach corridor, matches the spin, and latches. Autonomous vs **MPPI** vs the **learned** on-device policy vs human-in-loop. |
 | **Monocular pose** | `instruments/pose-vision.html` | The SPEED benchmark task: a target in full 6-DOF torque-free tumble, its pose recovered from one camera's noisy keypoints by perspective-n-point, scored live (~1–2° rotation, a few cm translation). |
 | **On-orbit assembly** | `instruments/assembly.html` | Structures too large to launch whole, built in orbit: a free-flyer plans a valid build order, fetches each module, aligns to tolerance, and mates the joint — a boom, array, or ring truss, with no crew. |
@@ -43,14 +43,15 @@ core/physics.mjs        error function, tether taper, vis-viva, escape,
                         EM-launch track/power, Δv composer, capture Kalman filter,
                         Clohessy-Wiltshire relative motion + two-impulse RPO targeting,
                         MPPI receding-horizon optimal capture controller,
-                        ZEM/ZEV powered-descent landing, torque-free 6-DOF rigid body,
+                        ZEM/ZEV powered-descent landing + clock-free optimal time-to-go,
+                        torque-free 6-DOF rigid body,
                         decentralized formation flight (slot assignment + local keeping)
 core/sweep.mjs          CLI: tether | sled | skyhook | compose | rpo | mppi
 core/physics.test.mjs   sanity checks against independently re-derived values
 ```
 
 ```bash
-npm test                    # 23 checks
+npm test                    # 27 checks
 npm run sweep -- tether     # tether mass ratio vs tip speed, per material
 npm run sweep -- sled       # track length / peak power vs exit speed
 npm run sweep -- skyhook    # catch/release vs altitude, against escape at the tip
@@ -97,6 +98,35 @@ Baselines (reproducible):
 | PD | 100% | 4.10 m/s | | | |
 
 Live leaderboard (runs the fast baselines in your browser, bit-identical): `bench/rpo-bench.html` → [physicalai-bmi.org/assets/sims/rpo-bench](https://physicalai-bmi.org/assets/sims/rpo-bench).
+
+## Landing-Bench
+
+An open, deterministic benchmark for **autonomous powered descent**: 120 fixed starts (40 each on Moon / Mars / Earth) varying altitude, downrange offset, entry velocity and engine thrust-to-weight, scored on whether the vehicle landed soft (<2 m/s), on the pad (<8 m), and at what fuel cost.
+
+```bash
+node bench/landing_bench.mjs     # prints the table, writes bench/landing-results.json
+```
+
+| Guidance | success | mean miss | touchdown | mean Δv |
+|---|---|---|---|---|
+| Scheduled ZEM/ZEV | 95.0% | 0.03 m | 0.45 m/s | 139 m/s |
+| Clock-free ZEM/ZEV | 90.8% | 0.00 m | 0.02 m/s | 159 m/s |
+| Learned · thrust (1,346p) | 60.0% | 0.12 m | 1.05 m/s | 142 m/s |
+| **Learned · tgo (1,281p)** | **91.7%** | **0.00 m** | **0.03 m/s** | 160 m/s |
+
+Three things this makes concrete:
+
+- **ZEM/ZEV does not need a clock.** For a fixed time-to-go the minimum-energy cost of the ZEM/ZEV solution is itself closed-form, `J(tgo) = 12|ZEM|²/tgo³ − 12(ZEM·ZEV)/tgo² + 4|ZEV|²/tgo`, so the optimal time-to-go can be solved from the *state* at every step (`optimalTgo`, `landGuidance`, `landFeedback`). The vehicle needs no plan and no schedule — and lands an order of magnitude more precisely (0.00 m / 0.02 m/s vs 0.03 m / 0.45 m/s).
+- **The honest trade.** The scheduled search still wins on success rate and fuel: on thrust-marginal starts it can find *some* feasible flight time where the energy-optimal time-to-go demands more thrust than the engine has. Clock-free buys precision and autonomy for about 15% more Δv.
+- **Factorization beat the training algorithm.** Cloning the *thrust* fails (9/120 with plain behavior cloning; 72/120 with 6 rounds of DAgger, and it plateaus) because the ZEM/ZEV gains go as 6/tgo² — the target is stiff exactly at touchdown. Cloning only the *time-to-go* and keeping the closed form reaches **110/120, at round 0, before any DAgger**. Learn the part that is expensive and smooth; keep the part that is cheap and exact.
+
+```bash
+node policy/train_land_tgo.mjs   # the shipped policy: state -> time-to-go (+ DAgger)
+node policy/train_land.mjs       # baseline: clone the thrust directly (fails)
+node policy/dagger_land.mjs      # baseline: clone the thrust + DAgger (plateaus)
+```
+
+Released: [physicalai-bmi/orbital-landing-tgo](https://huggingface.co/physicalai-bmi/orbital-landing-tgo).
 
 ## Formation-Bench
 

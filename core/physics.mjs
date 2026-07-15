@@ -447,3 +447,64 @@ export function formationRun(n, patterns, seed = 1, opts = {}) {
   return { n, seed, minSep:+minSepAll.toFixed(2), collided: minSepAll < 2*o.safeR,
     dvPerAgent:+(dvSum/n).toFixed(2), finalRms:perPattern[perPattern.length-1].finalRms, perPattern };
 }
+
+// --- Clock-free optimal descent: ZEM/ZEV with the time-to-go solved from the state ---
+// zemzev() is closed-form BUT needs a time-to-go, so it must be flown against a
+// flight-time schedule chosen up front (see land()). That makes the guidance a function
+// of the clock, not just the state. It need not be: for a fixed tgo the minimum-energy
+// cost of the ZEM/ZEV solution is itself closed-form,
+//     J(tgo) = 12|ZEM|²/tgo³ - 12(ZEM·ZEV)/tgo² + 4|ZEV|²/tgo,
+// so the optimal time-to-go is a cheap scalar minimisation over tgo — no simulation.
+// Solving it at every state turns ZEM/ZEV into a genuine state-feedback law: the
+// vehicle needs no clock and no plan, only where it is and how fast it is falling.
+// (The energy-optimal free-final-time form of the classic powered-descent guidance.)
+export function zemzevCost(r, v, rT, vT, g, tgo) {
+  const zem = rT.map((rt, i) => rt - (r[i] + v[i] * tgo + 0.5 * g[i] * tgo * tgo));
+  const zev = vT.map((vt, i) => vt - (v[i] + g[i] * tgo));
+  const z2 = zem.reduce((s, z) => s + z * z, 0), e2 = zev.reduce((s, e) => s + e * e, 0);
+  const ze = zem.reduce((s, z, i) => s + z * zev[i], 0);
+  return 12 * z2 / tgo ** 3 - 12 * ze / tgo ** 2 + 4 * e2 / tgo;
+}
+
+// The time-to-go that minimises that cost, from this state alone. Coarse scan then a
+// golden-section refine — cheap enough to run every control step.
+export function optimalTgo(r, v, g, opts = {}) {
+  const rT = opts.rT || r.map(() => 0), vT = opts.vT || v.map(() => 0);
+  const lo0 = opts.lo || 1, hi0 = opts.hi || 120;
+  let best = lo0, bestJ = Infinity;
+  for (let t = lo0; t <= hi0; t += 1) { const J = zemzevCost(r, v, rT, vT, g, t); if (J < bestJ) { bestJ = J; best = t; } }
+  let a = Math.max(lo0, best - 1), b = Math.min(hi0, best + 1);
+  const phi = 0.6180339887;
+  for (let k = 0; k < 40; k++) {                       // golden-section on [a,b]
+    const c = b - phi * (b - a), d = a + phi * (b - a);
+    if (zemzevCost(r, v, rT, vT, g, c) < zemzevCost(r, v, rT, vT, g, d)) b = d; else a = c;
+  }
+  return (a + b) / 2;
+}
+
+// The clock-free guidance law itself: state -> thrust acceleration (gravity excluded,
+// clamped to the engine limit). A pure function of the state; no schedule, no memory.
+export function landGuidance(r, v, g, aMax, opts = {}) {
+  const rT = opts.rT || r.map(() => 0), vT = opts.vT || v.map(() => 0);
+  const tgo = optimalTgo(r, v, g, { rT, vT });
+  let a = zemzev(r, v, rT, vT, g, tgo);
+  const am = Math.hypot(...a); if (am > aMax) a = a.map(x => x * aMax / am);
+  return a;
+}
+
+// Closed-loop descent flown by the clock-free law. Same reporting shape as landOnce.
+export function landFeedback(r0, v0, g, aMax, opts = {}) {
+  const dt = opts.dt || 0.1, rT = opts.rT || r0.map(() => 0), vT = opts.vT || v0.map(() => 0);
+  let r = r0.slice(), v = v0.slice(), fuel = 0, t = 0; const traj = [r.slice()];
+  for (let k = 0; k < 6000; k++) {
+    const a = landGuidance(r, v, g, aMax, { rT, vT });
+    v = v.map((vi, i) => vi + (a[i] + g[i]) * dt);
+    r = r.map((ri, i) => ri + v[i] * dt);
+    fuel += Math.hypot(...a) * dt; t += dt; traj.push(r.slice());
+    if (r[r.length - 1] <= 0) {
+      const miss = Math.hypot(...r.map((ri, i) => ri - rT[i])), speed = Math.hypot(...v);
+      return { landed: miss < 8 && speed < 2.0, miss, speed, fuel, t, traj };
+    }
+  }
+  return { landed: false, miss: Math.hypot(...r.map((ri, i) => ri - rT[i])), speed: Math.hypot(...v), fuel, t, traj };
+}

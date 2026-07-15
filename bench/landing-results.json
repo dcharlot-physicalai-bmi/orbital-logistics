@@ -1,0 +1,67 @@
+{
+  "benchmark": "Landing-Bench",
+  "starts": 120,
+  "bodies": [
+    "Moon",
+    "Mars",
+    "Earth"
+  ],
+  "soft": {
+    "speed": 2,
+    "miss": 8
+  },
+  "controllers": {
+    "Scheduled ZEM/ZEV": {
+      "success": 0.95,
+      "landed": 114,
+      "of": 120,
+      "perBody": {
+        "Moon": "34/40",
+        "Mars": "40/40",
+        "Earth": "40/40"
+      },
+      "meanMiss": 0.0272631653704076,
+      "meanTouchdown": 0.4510117556947267,
+      "meanFuel": 139.41432892178636
+    },
+    "Clock-free ZEM/ZEV": {
+      "success": 0.9083333333333333,
+      "landed": 109,
+      "of": 120,
+      "perBody": {
+        "Moon": "30/40",
+        "Mars": "39/40",
+        "Earth": "40/40"
+      },
+      "meanMiss": 0.000923262316630503,
+      "meanTouchdown": 0.023074261710853722,
+      "meanFuel": 159.3802403531569
+    },
+    "Learned · thrust (1,346p)": {
+      "success": 0.6,
+      "landed": 72,
+      "of": 120,
+      "perBody": {
+        "Moon": "22/40",
+        "Mars": "34/40",
+        "Earth": "16/40"
+      },
+      "meanMiss": 0.11824500165357395,
+      "meanTouchdown": 1.0474877291523423,
+      "meanFuel": 142.4718305894364
+    },
+    "Learned · tgo (1,281p)": {
+      "success": 0.9166666666666666,
+      "landed": 110,
+      "of": 120,
+      "perBody": {
+        "Moon": "31/40",
+        "Mars": "39/40",
+        "Earth": "40/40"
+      },
+      "meanMiss": 0.0006306470677199286,
+      "meanTouchdown": 0.027243988259853406,
+      "meanFuel": 159.80684942461244
+    }
+  }
+}
