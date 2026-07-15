@@ -44,7 +44,7 @@
     <div class="stat"><div class="k">Satellites</div><div class="v" id="s-n">—</div></div>
     <div class="stat"><div class="k">Formation err</div><div class="v" id="s-e">—</div></div>
     <div class="stat"><div class="k">Min sep</div><div class="v" id="s-m">—</div></div>
-    <div class="stat"><div class="k">Pattern</div><div class="v" id="s-p">—</div></div>
+    <div class="stat"><div class="k">Control</div><div class="v" id="s-c">—</div></div>
   </div>
 </div>
 <div class="hud legend">
@@ -54,8 +54,10 @@
   <div class="li"><span class="d" style="background:#ff6a6a"></span>Collision-avoidance push</div>
 </div>
 <div class="hud ctl">
+  <div class="seg" id="mode"><button data-m="dist" class="on">Distributed</button><button data-m="learn">Learned</button></div>
   <div class="seg" id="pat"><button data-p="ring" class="on">Ring</button><button data-p="line">Train</button><button data-p="grid">Aperture</button><button data-p="v">Wedge</button></div>
   <div class="sld">agents<input id="nn" type="range" min="6" max="16" step="1" value="12"><b id="lnn">12</b></div>
+  <span id="lp" class="mono" style="opacity:.4;font-size:10px;letter-spacing:.06em;color:var(--teal);white-space:nowrap">◆ 1,474p on-device</span>
 </div>
 <script>
 (function(){
@@ -105,18 +107,48 @@ function assign(e){
 }
 function reconfigure(pat){E.sl=slots(pat,E.n);E.patName=pat;assign(E);}
 const ROT=0.07;                            // gentle orbital rotation rate
+// --- on-device learned policy (released: physicalai-bmi/orbital-formation-bc) ------
+// The sim runs at pixel scale (R=170); the 1,474-param net was trained at the core's
+// metre scale (R=100). SIGMA converts sim px→m for the net and its output m→px back.
+const SIGMA=100/170; let POLICY=null;
+const relu_=z=>z.map(v=>v>0?v:0);
+const mv_=(W,a)=>W[0].map((_,j)=>a.reduce((s,ai,i)=>s+ai*W[i][j],0));
+function policyFwd(obs){const P=POLICY;
+  const x=obs.map((v,j)=>(v-P.xm[j])/P.xsd[j]);
+  const a1=relu_(mv_(P.W1,x).map((v,j)=>v+P.b1[j]));
+  const a2=relu_(mv_(P.W2,a1).map((v,j)=>v+P.b2[j]));
+  return mv_(P.W3,a2).map((v,j)=>v+P.b3[j]).map((v,j)=>v*P.ysd[j]+P.ym[j]);}
+fetch('formation_policy.json').then(r=>r.ok?r.json():null).then(j=>{POLICY=j;
+  if(j){document.getElementById('lp').style.opacity='1';}}).catch(()=>{});
+// each agent's 3 nearest neighbours' relative offsets (px), for the net's local obs
+function nearOffsets(e,i){const s=e.sats[i],nb=[];
+  for(let j=0;j<e.n;j++){if(j===i)continue;nb.push([s.x-e.sats[j].x,s.y-e.sats[j].y,Math.hypot(s.x-e.sats[j].x,s.y-e.sats[j].y)]);}
+  nb.sort((p,q)=>p[2]-q[2]);const out=[];for(let k=0;k<3;k++){const n=nb[k]||[15/SIGMA*3,0,0];out.push(n[0],n[1]);}return out;}
+let MODE='dist';
 function step(e,dt){
   e.t+=dt; e.rot+=ROT*dt;
   const c=Math.cos(e.rot),si=Math.sin(e.rot);
+  const learn = MODE==='learn' && POLICY;
   let minSep=999, ferrSum=0;
   for(let i=0;i<e.n;i++){const s=e.sats[i], sl=e.sl[s.slot];
     const tx=sl[0]*c-sl[1]*si, ty=sl[0]*si+sl[1]*c;         // slot in world frame
     const svx=-ROT*ty, svy=ROT*tx;                          // the slot's own velocity (tracks the rotation)
-    let ax=2.8*(tx-s.x)-2.8*(s.vx-svx), ay=2.8*(ty-s.y)-2.8*(s.vy-svy); // keeping with feedforward
-    s.rep=0;
+    let ax,ay;
+    // the collision-avoidance / neighbour scan is shared by both controllers
+    let avx=0,avy=0,aMax=0; s.rep=0;
     for(let j=0;j<e.n;j++){if(j===i)continue;const dx=s.x-e.sats[j].x,dy=s.y-e.sats[j].y,d=Math.hypot(dx,dy);
       if(d<minSep)minSep=d;
-      if(d<48){const w=(48-d)/48;ax+=dx/(d||1e-3)*w*w*420;ay+=dy/(d||1e-3)*w*w*420;s.rep=Math.max(s.rep,w);}}
+      if(d<48){const w=(48-d)/48;avx+=dx/(d||1e-3)*w*w*420;avy+=dy/(d||1e-3)*w*w*420;if(w>aMax)aMax=w;s.rep=Math.max(s.rep,w);}}
+    if(learn){
+      // local observation in metres → net → thrust (m/s²) → back to px/s²
+      const obs=[(tx-s.x), (ty-s.y), (s.vx-svx), (s.vy-svy), ...nearOffsets(e,i)].map(v=>v*SIGMA);
+      const u=policyFwd(obs); const nax=u[0]/SIGMA, nay=u[1]/SIGMA;
+      // reflexive safety filter (priority blend): the learned action yields to the
+      // certified avoidance as a neighbour closes — mirrors Formation-Bench.
+      ax=nax*(1-aMax)+avx; ay=nay*(1-aMax)+avy;
+    } else {
+      ax=2.8*(tx-s.x)-2.8*(s.vx-svx)+avx; ay=2.8*(ty-s.y)-2.8*(s.vy-svy)+avy; // keeping + avoidance
+    }
     const am=Math.hypot(ax,ay), U=140; if(am>U){ax*=U/am;ay*=U/am;}
     s.vx+=ax*dt;s.vy+=ay*dt;s.x+=s.vx*dt;s.y+=s.vy*dt;
     e.dv+=Math.hypot(ax,ay)*dt*0.02;
@@ -162,7 +194,8 @@ function panel(){const e=E;if(!e)return;
   document.getElementById('s-n').textContent=e.n+'';
   document.getElementById('s-e').innerHTML='<span style="color:'+(e.ferr<8?gv('--teal'):gv('--gold'))+'">'+e.ferr.toFixed(1)+' m</span>';
   document.getElementById('s-m').innerHTML='<span style="color:'+(e.minSep<22?gv('--red'):gv('--teal'))+'">'+e.minSep.toFixed(0)+' m</span>';
-  document.getElementById('s-p').innerHTML='<span style="color:var(--gold);text-transform:capitalize">'+e.patName+'</span>';
+  const lm = MODE==='learn'&&POLICY;
+  document.getElementById('s-c').innerHTML='<span style="color:'+(lm?gv('--teal'):gv('--gold'))+'">'+(lm?'Learned':'Distributed')+'</span>';
 }
 function tick(now){let dt=(now-last)/1000;last=now;if(dt>0.05)dt=0.05;
   if(E){ step(E,dt*1.4);
@@ -174,7 +207,10 @@ const $=id=>document.getElementById(id);
 document.querySelectorAll('#pat button').forEach(b=>b.onclick=()=>{P.pat=b.dataset.p;P.autopat=false;patTimer=0;
   document.querySelectorAll('#pat button').forEach(x=>x.classList.toggle('on',x===b));reconfigure(P.pat);});
 $('nn').addEventListener('input',e=>{P.n=+e.target.value;$('lnn').textContent=P.n;E=newRun();});
-window.__form=()=>E?{n:E.n,ferr:+E.ferr.toFixed(1),minSep:+E.minSep.toFixed(0),pat:E.patName}:null;
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{
+  if(b.dataset.m==='learn'&&!POLICY)return;                 // wait for the net to load
+  MODE=b.dataset.m; document.querySelectorAll('#mode button').forEach(x=>x.classList.toggle('on',x===b));});
+window.__form=()=>E?{n:E.n,ferr:+E.ferr.toFixed(1),minSep:+E.minSep.toFixed(0),pat:E.patName,mode:MODE,policy:!!POLICY}:null;
 E=newRun();requestAnimationFrame(tick);
 })();
 </script>
